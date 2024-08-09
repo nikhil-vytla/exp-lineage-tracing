@@ -1,0 +1,246 @@
+---
+title: "[Monocle 3] 2. Building single-cell trajectories"
+format:
+  html:
+    toc: true
+    html-math-method: katex
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header: 
+      text: |
+       \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+References:
+
+-   [Constructing single-cell trajectories](https://cole-trapnell-lab.github.io/monocle3/docs/trajectories/)
+
+## Introduction
+
+This notebook reviews methods to construct single-cell trajectories for further analysis using C. elegans data from [Packer & Zhu et al.](https://dx.doi.org/10.1101/565549). Their study includes a time series analysis of whole developing embyros. We will examine a small subset of the data which includes most of the neurons. We will load it as we did with the L2 data from Part 1.
+
+------------------------------------------------------------------------
+
+## 0. Install and Load Monocle3 and dependencies
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+
+BiocManager::install(c('BiocGenerics', 'DelayedArray', 'DelayedMatrixStats',
+                       'limma', 'lme4', 'S4Vectors', 'SingleCellExperiment',
+                       'SummarizedExperiment', 'batchelor', 'HDF5Array',
+                       'terra', 'ggrastr'))
+```
+
+```{r}
+install.packages("devtools")
+devtools::install_github('cole-trapnell-lab/monocle3')
+```
+
+```{r}
+library(monocle3)
+
+# The tutorial shown below and on subsequent pages uses two additional packages:
+library(ggplot2)
+library(dplyr)
+```
+
+## 1. Load data
+
+```{r}
+# Load the data
+expression_matrix <- readRDS(url("https://depts.washington.edu:/trapnell-lab/software/monocle3/celegans/data/packer_embryo_expression.rds"))
+cell_metadata <- readRDS(url("https://depts.washington.edu:/trapnell-lab/software/monocle3/celegans/data/packer_embryo_colData.rds"))
+gene_annotation <- readRDS(url("https://depts.washington.edu:/trapnell-lab/software/monocle3/celegans/data/packer_embryo_rowData.rds"))
+
+# Make the CDS object
+cds <- new_cell_data_set(expression_matrix,
+                         cell_metadata = cell_metadata,
+                         gene_metadata = gene_annotation)
+```
+
+## 2. Pre-process data and remove unwanted batch effects
+
+Here, we follow a slightly different batch correction strategy (paralleling Packer & Zhu et al):
+
+**Note**: in addition to using the `alignment_group argument` to `align_cds()`, which aligns groups of cells (i.e. batches), we are also using `residual_model_formula_str`. - This argument is for subtracting continuous effects. You can use this to control for things like the fraction of mitochondrial reads in each cell, which is sometimes used as a QC metric for each cell. - In this experiment (as in many scRNA-seq experiments), some cells spontaneously lyse, releasing their mRNAs into the cell suspension immediately prior to loading into the single-cell library prep. This "supernatant RNA" contaminates each cells' transcriptome profile to a certain extent. Fortunately, it is fairly straightforward to estimate the level of background contamination in each batch of cells and subtract it, which is what Packer et al did in the original study. - Each of the columns (`bg.300.loading`, `bg.400.loading`), corresponds to a background signal that a cell might be contaminated with. Passing these columns as terms in the `residual_model_formula_str` tells `align_cds()` to subtract these signals prior to dimensionality reduction, clustering, and trajectory inference. Note that you can call `align_cds()` with `alignment_group`, `residual_model_formula`, or both.
+
+```{r}
+## Step 1: Normalize and pre-process the data
+cds <- preprocess_cds(cds, num_dim = 50)
+
+## Step 2: Remove batch effects
+cds <- align_cds(cds, alignment_group = "batch", residual_model_formula_str = "~ bg.300.loading + bg.400.loading + bg.500.1.loading + bg.500.2.loading + bg.r17.loading + bg.b01.loading + bg.b02.loading")
+```
+
+## 3. Reduce dimensionality and visualize cells
+
+We are now ready to visualize cells. For this dataset, we'll use UMAP
+
+```{r}
+## Step 3: Reduce the dimensions using UMAP
+cds <- reduce_dimension(cds, reduction_method="UMAP")
+
+## For accelerated + multi-threaded dimension reduction
+# cds <- reduce_dimension(cds, umap.fast_sgd=TRUE, cores=4)
+```
+
+We can plot results. Below, we can note that even with looking at a small slice of the overarching dataset, Monocle 3 enables us to reconstruct a trajectory with numerous branches. Overlaying manual annotations on the UMAP reveals that these branches are principally occupied by one cell type.
+
+```{r}
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "cell.type")
+```
+
+Let's also visualize individual gene variation along the trajectory, specifically genes with interesting expression patterns in ciliated neurons:
+
+```{r}
+ciliated_genes <- c("che-1",
+                    "hlh-17",
+                    "nhr-6",
+                    "dmd-6",
+                    "ceh-36",
+                    "ham-1")
+
+plot_cells(cds,
+           genes=ciliated_genes,
+           label_cell_groups=FALSE,
+           show_trajectory_graph=FALSE)
+```
+
+## 4. Group cells into clusters
+
+Cells may continuously transition from one state to the next with no discrete boundary between them. For example, in a tissue responding to an infection, tissue resident immune cells and stromal cells will have very different initial transcriptomes, and will respond to infection quite differently, so they should be a part of the same trajectory.
+
+Monocle 3 does not assume that all cells in a dataset descend from a common transcriptional "ancestor". Instead, Monocle is able to learn when cells should be placed in the same trajectory as opposed to separate trajectories through its clustering procedure. By running `cluster_cells()`, each cell is assigned not only to a cluster but also to a partition. When we are learning trajectories, *each partition will eventually become a separate trajectory*.
+
+```{r}
+## Step 4: Cluster the cells
+cds <- cluster_cells(cds)
+plot_cells(cds, color_cells_by = "partition")
+```
+
+## 5. Learn trajectory graph
+
+Now, we're ready to fit a principal graph within each partition.
+
+```{r}
+cds <- learn_graph(cds)
+plot_cells(cds,
+           color_cells_by = "cell.type",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE)
+```
+
+## 6. Order cells in pseudotime
+
+After learning the principal graph, we are ready to order our cells according to their progress in the developmental program. Monocle 3 utilizes pseudotime to measure this progress.
+
+Pseudotime is a measure of how much progress an individual cell has made through a process such as cell differentiation.
+
+<details>
+
+<summary>More information on pseudotime</summary>
+
+In many biological processes, cells do not progress in perfect synchrony. In single-cell expression studies of processes such as cell differentiation, captured cells might be widely distributed in terms of progress. That is, in a population of cells captured at exactly the same time, some cells might be far along, while others might not yet even have begun the process. This asynchrony creates major problems when you want to understand the sequence of regulatory changes that occur as cells transition from one state to the next. Tracking the expression across cells captured at the same time produces a very compressed sense of a gene's kinetics, and the apparent variability of that gene's expression will be very high.
+
+By ordering each cell according to its progress along a learned trajectory, Monocle alleviates the problems that arise due to asynchrony. Instead of tracking changes in expression as a function of time, Monocle tracks changes as a function of progress along the trajectory, which we term "pseudotime". Pseudotime is an abstract unit of progress: it's simply the distance between a cell and the start of the trajectory, measured along the shortest path. The trajectory's total length is defined in terms of the total amount of transcriptional change that a cell undergoes as it moves from the starting state to the end state.
+
+</details>
+
+In order for us to order cells, we need to tell Monocle 3 where the "beginning" of the biological process is. We do so by *choosing regions of the graph that we mark as "roots"* of the trajectory. In time series experiments, this can usually be accomplished by finding spots in the UMAP space that are occupied by cells from early time points:
+
+```{r}
+plot_cells(cds,
+           color_cells_by = "embryo.time.bin",
+           label_cell_groups=FALSE,
+           label_leaves=TRUE,
+           label_branch_points=TRUE,
+           graph_label_size=1.5)
+```
+
+**Notes**: - The black lines show the structure of the graph. - The graph is not fully connected: cells in different partitions are in distinct components of the graph. - The circles with numbers in them denote special points within the graph. - Each leaf, denoted by light gray circles, corresponds to a different outcome (i.e. cell fate) of the trajectory. - Black circles indicate branch nodes, in which cells can travel to one of several outcomes. - You can control whether or not these are shown in the plot with the `label_leaves` and `label_branch_points` arguments to `plot_cells`. - Please note that numbers within the circles are provided for reference purposes only.
+
+Now that we have a sense of where the early cells fall, we can call `order_cells()`, which will calculate where each cell falls in pseudotime. In order to do so, `order_cells()` needs you to specify the root nodes of the trajectory graph. If you don't provide them as an argument, it will launch a graphical user interface for selecting one or more root nodes.
+
+```{r}
+cds <- order_cells(cds)
+```
+
+We can pick as many root nodes as we want. Plotting the cells and coloring them by pseudotime shows how they were ordered:
+
+```{r}
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           graph_label_size=1.5)
+```
+
+**Note**: Some of the cells are gray. This means they have infinite pseudotime, because they were not reachable from the root nodes that were picked. In general, any cell on a partition that lacks a root node will be assigned an infinite pseudotime.
+
+**Best practices**: In general, you should choose at least one root per partition.
+
+It's often desirable to specify the root of the trajectory programmatically, rather than manually picking it. The helper function `get_earliest_principal_node()` below does so by first grouping the cells according to which trajectory graph node they are nearest to. Then, it calculates what fraction of the cells at each node come from the earliest time point. Then it picks the node that is most heavily occupied by early cells and returns that as the root.
+
+```{r}
+# a helper function to identify the root principal points:
+get_earliest_principal_node <- function(cds, time_bin="130-170"){
+  cell_ids <- which(colData(cds)[, "embryo.time.bin"] == time_bin)
+  
+  closest_vertex <-
+  cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
+  root_pr_nodes <-
+  igraph::V(principal_graph(cds)[["UMAP"]])$name[as.numeric(names
+  (which.max(table(closest_vertex[cell_ids,]))))]
+  
+  root_pr_nodes
+}
+
+
+cds <- order_cells(cds, root_pr_nodes=get_earliest_principal_node(cds))
+```
+
+Passing the programmatically selected root node to `order_cells()` via the `root_pr_node` argument yields:
+
+```{r}
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           graph_label_size=1.5)
+```
+
+**Note**: We could do this on a per-partition basis by first grouping the cells by partition using the `partitions()` function. This would result in all cells being assigned a finite pseudotime.
+
+## 7. Subset cells by branch
+
+We can additionally subset cells based on their branch in the trajectory. The function `choose_graph_segments()` allows you to do so interactively.
+
+```{r}
+cds_sub <- choose_graph_segments(cds)
+```
+
+## 8. 3D cell trajectories!
+
+Lastly, we can explore 3-dimensional cell trajectories interactively using the `plot_cells_3d()` function!
+
+```{r}
+cds_3d <- reduce_dimension(cds, max_components = 3)
+cds_3d <- cluster_cells(cds_3d)
+cds_3d <- learn_graph(cds_3d)
+cds_3d <- order_cells(cds_3d, root_pr_nodes=get_earliest_principal_node(cds))
+
+cds_3d_plot_obj <- plot_cells_3d(cds_3d, color_cells_by="partition")
+```
+
+```{r}
+cds_3d_plot_obj
+```

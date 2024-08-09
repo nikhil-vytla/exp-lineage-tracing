@@ -1,0 +1,518 @@
+---
+title: "[Monocle 3] 1. Cluster, classify, (and annotate) cells"
+format:
+  html:
+    toc: true
+    html-math-method: katex
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header: 
+      text: |
+       \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+References:
+
+-   [Getting started with Monocle 3](https://cole-trapnell-lab.github.io/monocle3/docs/getting_started/)
+
+-   [Clustering and classifying your cells](https://cole-trapnell-lab.github.io/monocle3/docs/clustering/)
+
+## Typical Monocle3 Workflow
+
+![](https://cole-trapnell-lab.github.io/monocle3/images/monocle3_new_workflow.png)
+
+1.  scRNA-seq dataset
+2.  Pre-process data
+    1.  Normalize
+    2.  (optional) Remove batch effects
+3.  Non-linear dimensionality reduction
+    1.  t-SNE
+    2.  UMAP
+4.  Cluster cells
+5.  Compare clusters
+    1.  Identify top markers
+    2.  Targeted contrasts
+6.  Trajectory analysis
+
+------------------------------------------------------------------------
+
+## Introduction
+
+This notebook reviews clustering, classification, and annotation methods using C. elegans data from [Cao & Packer et al](https://science.sciencemag.org/content/357/6352/661). Their study described how to perform single-cell RNA-seq with combinatorial indexing in a protocol called "sci-RNA-seq". Cao & Packer et al. used sci-RNA-seq to produce the first single-cell RNA-seq analysis of a whole animal, so there are many cell types represented in the data. Learn more about the dataset and see how the authors performed the original analysis at the UW Genome Sciences [RNA Atlas of the Worm](https://atlas.gs.washington.edu/worm-rna/) site.
+
+------------------------------------------------------------------------
+
+## 0. Install and Load Monocle3 and dependencies
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+
+BiocManager::install(c('BiocGenerics', 'DelayedArray', 'DelayedMatrixStats',
+                       'limma', 'lme4', 'S4Vectors', 'SingleCellExperiment',
+                       'SummarizedExperiment', 'batchelor', 'HDF5Array',
+                       'terra', 'ggrastr'))
+```
+
+```{r}
+# install.packages("devtools")
+devtools::install_github('cole-trapnell-lab/monocle3')
+```
+
+```{r}
+library(monocle3)
+
+# The tutorial shown below and on subsequent pages uses two additional packages:
+library(ggplot2)
+library(dplyr)
+```
+
+## 1. Load data
+
+How Monocle 3 works:
+
+-   takes as input cell by gene expression matrix
+
+-   designed for use with absolute transcript counts (e.g. from UMI experiments)
+
+-   works"out-of-the-box" with the transcript count matrices produced by [Cell Ranger](https://support.10xgenomics.com/single-cell/software/overview/welcome), the software pipeline for analyzing experiments from the 10X Genomics Chromium instrument
+
+-   also works well with data from other RNA-Seq workflows such as [sci-RNA-Seq](https://science.sciencemag.org/content/357/6352/661) and instruments like the Biorad ddSEQ
+
+### 1.1 The `cell_data_set` class
+
+Monocle holds single-cell expression data in objects of the `cell_data_set` class. The class is derived from the Bioconductor [`SingleCellExperiment`](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) class, which provides a common interface familiar to those who have analyzed other single-cell experiments with Bioconductor. The class requires three input files:
+
+-   `expression_matrix`, a numeric matrix of expression values, where rows are genes, and columns are cells
+
+-   `cell_metadata`, a data frame, where rows are cells, and columns are cell attributes (such as cell type, culture condition, day captured, etc.)
+
+-   `gene_metadata`, an data frame, where rows are features (e.g. genes), and columns are gene attributes, such as biotype, gc content, etc.
+
+#### 1.1.1 Disclaimer
+
+The expression value matrix **must**:
+
+-   have the same number of columns as the `cell_metadata` has rows.
+
+-   have the same number of rows as the `gene_metadata` has rows.
+
+Additionally:
+
+-   row names of the `cell_metadata` object should match the column names of the expression matrix.
+
+-   row names of the `gene_metadata` object should match row names of the expression matrix.
+
+-   one of the columns of the `gene_metadata` should be named "gene_short_name", which represents the gene symbol or simple name (generally used for plotting) for each gene.
+
+### 1.2 Generate a `cell_data_set` (CDS)
+
+```{r}
+# Load the data
+expression_matrix <- readRDS(url("https://depts.washington.edu:/trapnell-lab/software/monocle3/celegans/data/cao_l2_expression.rds"))
+cell_metadata <- readRDS(url("https://depts.washington.edu:/trapnell-lab/software/monocle3/celegans/data/cao_l2_colData.rds"))
+gene_annotation <- readRDS(url("https://depts.washington.edu:/trapnell-lab/software/monocle3/celegans/data/cao_l2_rowData.rds"))
+
+
+# Make the CDS object
+cds <- new_cell_data_set(expression_matrix,
+                         cell_metadata = cell_metadata,
+                         gene_metadata = gene_annotation)
+```
+
+### 1.3 Generate a `cell_data_set` from 10X output
+
+For 10X Genomics Cell Ranger data, you can use the `load_cellranger_data` function:
+
+-   **Note:** `load_cellranger_data` takes an argument `umi_cutoff` that determines how many reads a cell must have to be included. **By default, this is set to 100**. If you would like to include all cells, set `umi_cutoff` to 0.
+
+-   For `load_cellranger_data` to find the correct files, you must provide a path to the folder containing the un-modified Cell Ranger 'outs' folder.
+
+-   Your file structure should look like: `"10x_data/outs/filtered_feature_bc_matrix/"` where `filtered_feature_bc_matrix` contains files: `{ features.tsv.gz, barcodes.tsv.gz, matrix.mtx.gz }`. (`load_cellranger_data` can also handle Cell Ranger V2 data where "features" is substituted for "gene" and the files are not gzipped.)
+
+```{r eval=FALSE}
+
+# Provide the path to the Cell Ranger output.
+cds <- load_cellranger_data("~/Downloads/10x_data")
+```
+
+## 2. Pre-process data
+
+Here, we tell Monocle3 how to normalize data, whether we want to use PCA (standard for RNA-seq) or Latent Semantic Indexing (common for ATAC-seq), and how to remove any batch effects.
+
+```{r}
+## Step 1: Normalize and pre-process the data
+cds <- preprocess_cds(cds = cds, 
+                      num_dim = 100, # the number of dimensions you want to return
+                      method = "PCA", 
+                      norm_method = "log") # normalization methods prior to reducing dimentionality
+```
+
+We also confirm that we're using enough PCs to capture most of the variation in gene expression across all the cells in the data set. The following method looks at the fraction of variation explained by each PC.
+
+```{r}
+plot_pc_variance_explained(cds)
+```
+
+We can see that using more than 100 PCs would capture only a small amount of additional variation, and each additional PC makes downstream steps in Monocle slower.
+
+## 3. Reduce dimensionality and visualize cells
+
+We are now ready to visualize cells. Monocle supports both UMAP (default) and t-SNE.
+
+### 3.1 Via UMAP
+
+```{r}
+## Step 3: Reduce the dimensions using UMAP
+cds <- reduce_dimension(cds, reduction_method="UMAP")
+
+## For accelerated + multi-threaded dimension reduction
+# cds <- reduce_dimension(cds, umap.fast_sgd=TRUE, cores=4)
+```
+
+We can plot cells (simplified).
+
+```{r}
+plot_cells(cds)
+```
+
+And we can plot cells with original annotations (available as part of Cao & Packer's raw data).
+
+**Note**: Except for a few cases, the `color_cells_by` value can be the name of any column in `colData(cds)`, but behavior may be different (e.g. if you are using a categorical variable, labels are added to the plot, with each label positioned roughly in the middle of all cells with that label).
+
+```{r}
+plot_cells(cds = cds, 
+           reduction_method = "UMAP",
+           color_cells_by = "cao_cell_type", 
+           group_cells_by = "partition",
+           show_trajectory_graph = F, 
+           label_cell_groups = T)
+```
+
+You can also plot specific genes.
+
+```{r}
+plot_cells(cds, genes=c("cpna-2", "egl-21", "ram-2", "inos-1"))
+```
+
+### 3.2 Via t-SNE
+
+If you want, you can also use t-SNE to visualize your data. First, call `reduce_dimension` with `reduction_method="tSNE"`.
+
+```{r}
+cds <- reduce_dimension(cds, reduction_method="tSNE")
+```
+
+Then, when you call `plot_cells()`, pass `reduction_method="tSNE"` to it as well:
+
+```{r}
+plot_cells(cds, reduction_method="tSNE", color_cells_by="cao_cell_type")
+```
+
+**Note:** You can use both UMAP and t-SNE on the same `cds` object - one won't overwrite the results of the other. But you *must specify which one you want in downstream functions* like `plot_cells`.
+
+## 4. Check for and remove unwanted batch effects
+
+It's also important to check for batch effects (systematic differences in the transcriptome of cells measured in different experimental batches).
+
+We should always check for batch effects when performing dimensionality reduction. We should add a column to the `colData` that encodes which batch each cell is from, and we can then simply color the cells by batch. In this scenario, Cao & Packer included a "plate" annotation in their data (specifying which sci-RNA-seq plate each cell originated from).
+
+Coloring the UMAP by plate reveals that...
+
+```{r}
+plot_cells(cds, color_cells_by="plate", label_cell_groups=FALSE)
+```
+
+Dramatic batch effects are *not* evident in this data. If they were evident, we would expect to see groups of cells taht really only come from one plate.
+
+However, we can try to remove batch effects by running the `align_cds()` function.
+
+**Note**: when run with the `alignment_group` argument, `align_cds()` tries to remove batch effects using mutual nearest neighbor alignment, a technique introduced by John Marioni's lab (via Aaron Lun's `batchelor` package).
+
+```{r}
+cds <- align_cds(cds, num_dim = 100, alignment_group = "plate")
+cds <- reduce_dimension(cds)
+plot_cells(cds, color_cells_by="plate", label_cell_groups=FALSE)
+```
+
+## 5. Group cells into clusters
+
+We are now ready for clustering! Monocle 3 uses [community detection](https://doi.org/10.1038/s41598-019-41695-z) (first introduced by [Levine et al](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4508757/)).
+
+```{r}
+## Step 4: Cluster the cells
+cds <- cluster_cells(
+    cds = cds, 
+    k = 20, 
+    reduction_method = "UMAP",
+    num_iter = 1000
+)
+# alternatively: cds <- cluster_cells(cds, resolution=1e-5)
+
+plot_cells(cds)
+```
+
+After clustering cells, `plot_cells()` will label each cluster of cells separately according to how you want to color the cells. For example, the following command colors cells according to their cell type annotation, and each cluster is labeled according to the *most common* annotation within it.
+
+```{r}
+plot_cells(cds = cds, 
+           color_cells_by = "partition", 
+           label_cell_groups = T)
+```
+
+The following command displays more customizability:
+
+-   You can also choose to label whole partitions instead of clusters by passing the argument `group_cells_by="partition"`.
+
+-   You can plot the top 2 labels per cluster by passing `labels_per_group=2`.
+
+-   You can disable the labeling policy (making `plot_cells()` behave similarly as it did prior to calling `cluster_cells()`)
+
+```{r}
+plot_cells(
+    cds = cds, 
+    group_cells_by = "partition", 
+    color_cells_by = "cao_cell_type", 
+    label_groups_by_cluster = T, 
+    labels_per_group = 1
+)
+```
+
+## 6. Find marker genes expressed by each cluster
+
+After clustering cells, we are now ready to ask which genes make each cluster different from one another.
+
+```{r}
+marker_test_res <- top_markers(cds, group_cells_by="partition", 
+                               reference_cells=1000, cores=8)
+```
+
+Our created dataframe, `marker_test_res`, contains a number of metrics for specific gene expressions per partition. We can group the cells according to cluster, partition, or any categorical variable in `colData(cds)`, and then rank the table according to one or more of the specificity metrics and identify the top gene per cluster.
+
+```{r}
+top_specific_markers <- marker_test_res %>%
+                            filter(fraction_expressing >= 0.10) %>%
+                            group_by(cell_group) %>%
+                            top_n(n=1, wt=pseudo_R2)
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
+```
+
+```{r}
+plot_genes_by_group(cds,
+                    top_specific_marker_ids,
+                    group_cells_by="partition",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+```
+
+Plotting additional marker genes:
+
+```{r}
+top_specific_markers <- marker_test_res %>%
+                            filter(fraction_expressing >= 0.10) %>%
+                            group_by(cell_group) %>%
+                            top_n(3, pseudo_R2)
+
+top_specific_marker_ids <- unique(top_specific_markers %>% pull(gene_id))
+
+plot_genes_by_group(cds,
+                    top_specific_marker_ids,
+                    group_cells_by="partition",
+                    ordering_type="cluster_row_col",
+                    max.size=3)
+```
+
+## 7. Annotate cells according to type
+
+Lastly, we can perform cell annotation. One common methods is to first cluster the cells, then assign a cell type to each cluster based on its respective gene expression profile. Cao & Packer referenced literature and gene expression databases for markers restricted to each cluster in order to assign the identities (contained in `colData(cds)$cao_cell_type`).
+
+We first create a new column in `colData(cds)` and initialize it with value of `clusters(cds)`.
+
+```{r}
+colData(cds)$assigned_cell_type <- as.character(partitions(cds))
+```
+
+```{r}
+colData(cds)$assigned_cell_type <- dplyr::recode(colData(cds)$assigned_cell_type,
+                                                 "1"="Body wall muscle",
+                                                 "2"="Germline",
+                                                 "3"="Motor neurons",
+                                                 "4"="Seam cells",
+                                                 "5"="Sex myoblasts",
+                                                 "6"="Socket cells",
+                                                 "7"="Marginal_cell",
+                                                 "8"="Coelomocyte",
+                                                 "9"="Am/PH sheath cells",
+                                                 "10"="Ciliated neurons",
+                                                 "11"="Intestinal/rectal muscle",
+                                                 "12"="Excretory gland",
+                                                 "13"="Chemosensory neurons",
+                                                 "14"="Interneurons",
+                                                 "15"="Unclassified eurons",
+                                                 "16"="Ciliated neurons",
+                                                 "17"="Pharyngeal gland cells",
+                                                 "18"="Unclassified neurons",
+                                                 "19"="Chemosensory neurons",
+                                                 "20"="Ciliated neurons",
+                                                 "21"="Ciliated neurons",
+                                                 "22"="Inner labial neuron",
+                                                 "23"="Ciliated neurons",
+                                                 "24"="Ciliated neurons",
+                                                 "25"="Ciliated neurons",
+                                                 "26"="Hypodermal cells",
+                                                 "27"="Mesodermal cells",
+                                                 "28"="Motor neurons",
+                                                 "29"="Pharyngeal gland cells",
+                                                 "30"="Ciliated neurons",
+                                                 "31"="Excretory cells",
+                                                 "32"="Amphid neuron",
+                                                 "33"="Pharyngeal muscle")
+```
+
+```{r}
+plot_cells(cds, group_cells_by="partition", color_cells_by="assigned_cell_type")
+```
+
+From the above plot, we can determine that partition 7 has some substructure which isn't immediately obvious visually which cell type/types it corresponds to.
+
+The `choose_cells()` function allows us to interactively isolate partitions/groups of cells for deeper analysis.
+
+```{r}
+cds_subset <- choose_cells(cds)
+```
+
+Now, we have a smaller `cell_data_set` object. we can use `graph_test()` to identify differentially expressed genes in different subsets of cells from this partition.
+
+```{r}
+pr_graph_test_res <- graph_test(cds_subset, neighbor_graph="knn", cores=8)
+pr_deg_ids <- row.names(subset(pr_graph_test_res, morans_I > 0.01 & q_value < 0.05))
+```
+
+```{r}
+gene_module_df <- find_gene_modules(cds_subset[pr_deg_ids,], resolution=1e-3)
+```
+
+We can then plot these modules' aggregate expression values to reveal which cells express which modules
+
+```{r}
+plot_cells(cds_subset, genes=gene_module_df, 
+           show_trajectory_graph=FALSE, 
+           label_cell_groups=FALSE)
+```
+
+Now, we can explore genes in each module *or* conduct gene ontology enrichment analysis to glean insights on presence of cell types.
+
+Let's say that after doing this, we have a good idea of present cell types in our partition of interest. Then, let's recluster the cells at finer resolution, and see how they overlap with clusters in the partition.
+
+```{r}
+cds_subset <- cluster_cells(cds_subset, resolution=1e-2)
+plot_cells(cds_subset, color_cells_by="cluster")
+```
+
+Based on how the patterns line up, we can make the following assignments:
+
+```{r}
+colData(cds_subset)$assigned_cell_type <- as.character(clusters(cds_subset)[colnames(cds_subset)])
+colData(cds_subset)$assigned_cell_type <- dplyr::recode(colData(cds_subset)$assigned_cell_type,
+                                                        "1"="Sex myoblasts",
+                                                        "2"="Somatic gonad precursors",
+                                                        "3"="Vulval precursors",
+                                                        "4"="Sex myoblasts",
+                                                        "5"="Vulval precursors",
+                                                        "6"="Somatic gonad precursors",
+                                                        "7"="Sex myoblasts",
+                                                        "8"="Sex myoblasts",
+                                                        "9"="Ciliated neurons",
+                                                        "10"="Vulval precursors",
+                                                        "11"="Somatic gonad precursor",
+                                                        "12"="Distal tip cells",
+                                                        "13"="Somatic gonad precursor",
+                                                        "14"="Sex myoblasts",
+                                                        "15"="Vulval precursors")
+
+plot_cells(cds_subset, group_cells_by="cluster", color_cells_by="assigned_cell_type")
+```
+
+And lastly, we can transfer the annotations from `cds_subset` back to the full dataset, and filter out low-quality cells at this stage.
+
+```{r}
+colData(cds)[colnames(cds_subset),]$assigned_cell_type <- colData(cds_subset)$assigned_cell_type
+cds <- cds[,colData(cds)$assigned_cell_type != "Failed QC" | is.na(colData(cds)$assigned_cell_type )]
+plot_cells(cds, group_cells_by="partition", 
+           color_cells_by="assigned_cell_type", 
+           labels_per_group=5)
+```
+
+## 8. Automated annotation with Garnett
+
+Manual annotation can be laborious, and must be re-done if the underlying cluster changes. The creators of Monocle 3 also developed [Garnett](https://cole-trapnell-lab.github.io/garnett/), a tool for automatic cell annotation using supervised classification models to classify cells based on marker genes.
+
+```{r}
+assigned_type_marker_test_res <- top_markers(cds,
+                                             group_cells_by="assigned_cell_type",
+                                             reference_cells=1000,
+                                             cores=8)
+```
+
+```{r}
+# Require that markers have at least JS specificty score > 0.5 and
+# be significant in the logistic test for identifying their cell type:
+garnett_markers <- assigned_type_marker_test_res %>%
+                        filter(marker_test_q_value < 0.01 & specificity >= 0.5) %>%
+                        group_by(cell_group) %>%
+                        top_n(5, marker_score)
+# Exclude genes that are good markers for more than one cell type:
+garnett_markers <- garnett_markers %>% 
+                        group_by(gene_short_name) %>%
+                        filter(n() == 1)
+```
+
+```{r}
+generate_garnett_marker_file(garnett_markers, file="./monocle3_1_marker_file.txt")
+```
+
+### 8.1 Dependencies
+
+```{r}
+## Install the monocle3 branch of garnett
+BiocManager::install(c("org.Mm.eg.db", "org.Hs.eg.db"))
+devtools::install_github("cole-trapnell-lab/garnett", ref="monocle3")
+```
+
+```{r}
+library(garnett)
+# install gene database for worm
+BiocManager::install("org.Ce.eg.db")
+```
+
+### 8.2 Train cell classifier
+
+```{r}
+colData(cds)$garnett_cluster <- clusters(cds)
+worm_classifier <- train_cell_classifier(cds = cds,
+                                         marker_file = "./monocle3_1_marker_file.txt", 
+                                         db=org.Ce.eg.db::org.Ce.eg.db,
+                                         cds_gene_id_type = "ENSEMBL",
+                                         num_unknown = 50,
+                                         marker_file_gene_id_type = "SYMBOL",
+                                         cores=8)
+```
+
+### 8.3 Classify cells
+
+```{r}
+cds <- classify_cells(cds, worm_classifier,
+                      db = org.Ce.eg.db::org.Ce.eg.db,
+                      cluster_extend = TRUE,
+                      cds_gene_id_type = "ENSEMBL")
+```
+
+```{r}
+plot_cells(cds,
+           group_cells_by="partition",
+           color_cells_by="cluster_ext_type")
+```
