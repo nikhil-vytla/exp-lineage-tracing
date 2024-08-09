@@ -11,4 +11,4 @@ This repo contains exploratory notebooks and other resources related to the foll
   - Seurat PBMC tutorial
   - Supplemental notebooks for Monocle
 
-Work was performed as a Bioinformatics Intern at Dana-Farber Cancer Institute Ceenter for Cancer Genomics (DFCI CCG) during Summer 2024.
+Work was performed as a Bioinformatics Intern at Dana-Farber Cancer Institute Center for Cancer Genomics (DFCI CCG) during Summer 2024.
