@@ -1,0 +1,226 @@
+---
+title: "[RNA Velocity] Trajectory inference and analysis of scRNA-seq data"
+format:
+  html:
+    toc: true
+    html-math-method: katex
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header: 
+      text: |
+       \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+author:
+  - name: Nikhil Vytla
+    email: nikhil_vytla@dfci.harvard.edu
+    affiliations:
+      - DFCI CCG
+---
+
+# Introduction
+
+This notebook reviews the use of **RNA velocity** for lineage tracing with a few modern Python/R libraries, including `scVelo` and `velociraptor`, which build on original work from `velocyto` (last maintained in 2017).
+
+What is **RNA velocity**? To understand RNA velocity, we must first recognize two ideas:
+
+1.  The RNA metabolic process and its intrinsic dynamics:
+    1.  RNA is synthesized at a rate of $\alpha$
+    2.  RNA is spliced to remove introns and form mature mRNA at rate of $\beta$
+    3.  Mature mRNA is degraded after functioning at a rate of $\gamma$
+    4.  In steady state, the unspliced and spliced RNA are at an equilibrium (newly synthesized RNAs are exactly equal to the spliced RNAs, and similarly also to the degradated RNAs).
+    5.  Therefore, the break of the equilibrium state between unspliced and spliced RNAs is *highly informative* and can indicate whether a gene is in the induction or suppression state.
+2.  Unspliced RNA indicates transcriptional speed
+    1.  Usually, the proportion of unspliced RNAs is very low in RNA-seq, especially for protocols with Poly-A enrichment, which is very common.
+    2.  Namely, in principle, only RNAs reaching 3\' of the gene body can be captured.
+    3.  However, the unspliced RNAs still can be observed at a substantial proportion, usually covering 15-25%. The reason is still highly mysterious, partly biological for co-transcriptional splicing and partly technical for low efficiency on poly-A capturing.
+
+While RNA velocity is still impacted by high signal-to-noise ratio, the ability to automatically detect the trajectory direction continues to draw research efforts to develop more accurate and robust methods.
+
+![RNA velocity process, adapted from [La Manno et al. 2018](https://www.nature.com/articles/s41586-018-0414-6) (this paper introduced `velocyto`).](images/rna_velo_process.png)
+
+# Setup
+
+## R
+
+This notebook will utilize the R package `velociraptor`. `velociraptor` provides a lightweight interface between the Bioconductor `SingleCellExperiment` data structure and the `scVelo` Python package for RNA velocity calculations.
+
+The interface is comparable to that of many other `SingleCellExperiment`-compatible functions, allowing users to plug in RNA velocity calculations into the existing Bioconductor analysis framework.
+
+```{r message=FALSE, warning=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(c("scRNAseq", "velociraptor", "scuttle", "scran"), dependencies = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Load libraries
+library(scRNAseq) # data loading
+library(scuttle)
+library(scran)
+library(velociraptor)
+library(scater)
+library(ggplot2)
+```
+
+## Python
+
+`scVelo` is originally built in Python, and by default uses the `AnnData` format. Please check out the following official Jupyter Notebook tutorials for guidance:
+
+-   [RNA Velocity Basics](https://scvelo.readthedocs.io/en/stable/VelocityBasics.html)
+
+-   [Dynamical Modeling](https://scvelo.readthedocs.io/en/stable/DynamicalModeling.html)
+
+-   [Differential Kinetics](https://scvelo.readthedocs.io/en/stable/DifferentialKinetics.html)
+
+# Exploratory Data Analysis
+
+To demonstrate, we will use a data set from [Hermann et al. (2018)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6384825/), provided via the `scRNAseq` package. This data set contains gene-wise estimates of spliced and unspliced UMI counts for 2,325 mouse spermatogenic cells.
+
+## Load Data
+
+```{r warning=FALSE}
+sce <- HermannSpermatogenesisData()
+sce
+```
+
+## **Downsampling for demonstration**
+
+The full data set requires up to 12 GB of memory for the example usage presented in this vignette. For demonstration purposes, we downsample the data set to the first 500 cells. Feel free to skip this downsampling step if you have access to sufficient memory.
+
+```{r}
+sce <- sce[, 1:500]
+```
+
+# Basic RNA Velocity Workflow
+
+We assume that feature selection has already been performed by the user using any method (see [here](https://osca.bioconductor.org/feature-selection.html) for some suggestions). In this case, we will use the variance of log-expressions from [*scran*](https://bioconductor.org/packages/3.18/scran) to select the top 2000 genes.
+
+```{r}
+sce <- logNormCounts(sce, assay.type=1)
+
+dec <- modelGeneVar(sce)
+top.hvgs <- getTopHVGs(dec, n=2000)
+```
+
+We can plug these choices into the [`scvelo()`](https://kevinrue.github.io/velociraptor/reference/scvelo.html) function with our `SingleCellExperiment` object. By default, [`scvelo()`](https://kevinrue.github.io/velociraptor/reference/scvelo.html) uses the steady-state approach to estimate velocities, though the stochastic and dynamical models implemented in [scvelo](https://pypi.org/project/scvelo) can also be used by modifying the `mode` argument.
+
+Note that automatic neighbor calculation is deprecated since scvelo==0.4.0 and will be removed in a future version. Instead, [*velociraptor*](https://bioconductor.org/packages/3.18/velociraptor) computes neighbors with Scanpy (as per [scVelo recommendations](https://github.com/theislab/scvelo/blob/f21651c3b122860d8ae6b5a5173f242ba91c8761/scvelo/preprocessing/moments.py#L66)), and the number of neighbors should be supplied to [scanpy.pp.neighbors](https://scanpy.readthedocs.io/en/stable/api/generated/scanpy.pp.neighbors.html) as demonstrated below.
+
+In particular, the default number of neighbors was 30 for [scvelo.pp.moments](https://scvelo.readthedocs.io/en/stable/scvelo.pp.moments.html) while it is 15 for [scanpy.pp.neighbors](https://scanpy.readthedocs.io/en/stable/api/generated/scanpy.pp.neighbors.html). Users should use `scvelo.params=list(neighbors=list(n_neighbors=30L)` to reproduce earlier results.
+
+```{r message=FALSE, warning=FALSE}
+velo.out <- scvelo(
+  sce, subset.row=top.hvgs, assay.X="spliced",
+  scvelo.params=list(neighbors=list(n_neighbors=30L))
+)
+```
+
+```{r}
+velo.out
+```
+
+In the above call, we use the `"spliced"` count matrix as a proxy for the typical exonic count matrix. Technically, the latter is not required for the velocity estimation, but [scvelo](https://pypi.org/project/scvelo) needs to perform a PCA and nearest neighbors search, and we want to ensure that the neighbors detected inside the function are consistent with the rest of the analysis workflow (performed on the exonic counts).
+
+There are some subtle differences between the spliced count matrix and the typical exonic count matrix - see [`?scvelo`](https://kevinrue.github.io/velociraptor/reference/scvelo.html) for some commentary about this - but the spliced counts are generally a satisfactory replacement if the latter is not available.
+
+The [`scvelo()`](https://kevinrue.github.io/velociraptor/reference/scvelo.html) function produces a `SingleCellExperiment` containing all of the outputs of the calculation in Python. Of particular interest is the `velocity_pseudotime` vector that captures the relative progression of each cell along the biological process driving the velocity vectors.
+
+We can visualize this effect below in a $t$-SNE plot generated by [*scater*](https://bioconductor.org/packages/3.18/scater) on the top HVGs.
+
+```{r}
+set.seed(100) # for reproducibility
+sce <- runPCA(sce, subset_row=top.hvgs)
+sce <- runTSNE(sce, dimred="PCA", perplexity = 30)
+
+sce$velocity_pseudotime <- velo.out$velocity_pseudotime
+plotTSNE(sce, colour_by="velocity_pseudotime")
+```
+
+It is also straightforward to embed the velocity vectors into our desired low-dimensional space, as shown below for the $t$-SNE coordinates. This uses a grid-based approach to summarize the per-cell vectors into local representatives for effective visualization.
+
+```{r}
+embedded <- embedVelocity(reducedDim(sce, "TSNE"), velo.out)
+```
+
+```{r}
+grid.df <- gridVectors(sce, embedded, use.dimred = "TSNE")
+
+plotTSNE(sce, colour_by="velocity_pseudotime") +
+    geom_segment(data=grid.df, mapping=aes(x=start.1, y=start.2, 
+        xend=end.1, yend=end.2, colour=NULL), arrow=arrow(length=unit(0.05, "inches")))
+```
+
+And that\'s it, really.
+
+## **Advanced options**
+
+[`scvelo()`](https://kevinrue.github.io/velociraptor/reference/scvelo.html) interally performs a PCA step that we can bypass by supplying our own PC coordinates.
+
+It is often the case that we have already performed PCA in the earlier analysis steps, so we can just re-use those results to:
+
+1.  save time and
+2.  improve consistency with the other steps.
+
+Here, we computed the PCA coordinates in [`runPCA()`](https://rdrr.io/pkg/BiocSingular/man/runPCA.html) above, so let\'s just recycle that:
+
+```{r}
+# Only setting assay.X= for the initial AnnData creation,
+# it is not actually used in any further steps.
+velo.out2 <- scvelo(sce, assay.X=1, subset.row=top.hvgs, use.dimred="PCA") 
+```
+
+```{r}
+velo.out2
+```
+
+`velociraptor` also provides an option to use the [scvelo](https://pypi.org/project/scvelo) pipeline without modification, i.e., relying on their normalization and feature selection.
+
+This sacrifices consistency with other Bioconductor workflows but enables perfect mimicry of a pure Python-based analysis. In this case, arguments like `subset.row=` are simply ignored.
+
+```{r}
+velo.out3 <- scvelo(sce, assay.X=1, use.theirs=TRUE)
+```
+
+```{r}
+velo.out3
+```
+
+Advanced users can tinker with the settings of individual [scvelo](https://pypi.org/project/scvelo) steps by setting named lists of arguments in the `scvelo.params` argument.
+
+For example, to tinker with the behavior of the `recover_dynamics` step, we could do:
+
+```{r}
+velo.out4 <- scvelo(sce, assay.X=1, subset.row=top.hvgs,
+    scvelo.params=list(recover_dynamics=list(max_iter=20)))
+```
+
+```{r}
+velo.out4
+```
+
+# References
+
+## Prior Workshops / Websites
+
+-   [Velociraptor R documentation](https://kevinrue.github.io/velociraptor/articles/velociraptor.html)
+
+```{=html}
+<!-- -->
+```
+-   [HKU Single-cell Workshop 2021](https://statbiomed.github.io/SingleCell-Workshop-2021) (Section 3)
+
+-   [New Academic Year "Cell Diverse" Single Cell Analysis Technique Workshop (October 2019, Nakoto Lab, UTokyo)](https://singlecellanalysistutorial.readthedocs.io/en/latest/index.html)
+
+## Papers / Articles
+
+Hermann, Brian P, Keren Cheng, Anukriti Singh, Lorena Roa-De La Cruz, Kazadi N Mutoji, I-Chung Chen, Heidi Gildersleeve, et al. 2018. \"The Mammalian Spermatogenesis Single-Cell Transcriptome, from Spermatogonial Stem Cells to Spermatids.\" *Cell Rep.* 25: 1650--1667.e8.
+
+# Code Internals
+
+## Session Info
+
+```{r}
+sessionInfo()
+```
