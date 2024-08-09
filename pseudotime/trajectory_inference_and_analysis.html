@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.3.450">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="Nikhil Vytla">
+
+<title>[Pseudotime] Trajectory inference and analysis of scRNA-seq data</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="trajectory_inference_and_analysis_files/libs/clipboard/clipboard.min.js"></script>
+<script src="trajectory_inference_and_analysis_files/libs/quarto-html/quarto.js"></script>
+<script src="trajectory_inference_and_analysis_files/libs/quarto-html/popper.min.js"></script>
+<script src="trajectory_inference_and_analysis_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="trajectory_inference_and_analysis_files/libs/quarto-html/anchor.min.js"></script>
+<link href="trajectory_inference_and_analysis_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="trajectory_inference_and_analysis_files/libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="trajectory_inference_and_analysis_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="trajectory_inference_and_analysis_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="trajectory_inference_and_analysis_files/libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+
+  <script>window.backupDefine = window.define; window.define = undefined;</script><script src="https://cdn.jsdelivr.net/npm/katex@0.15.1/dist/katex.min.js"></script>
+  <script>document.addEventListener("DOMContentLoaded", function () {
+ var mathElements = document.getElementsByClassName("math");
+ var macros = [];
+ for (var i = 0; i < mathElements.length; i++) {
+  var texText = mathElements[i].firstChild;
+  if (mathElements[i].tagName == "SPAN") {
+   katex.render(texText.data, mathElements[i], {
+    displayMode: mathElements[i].classList.contains('display'),
+    throwOnError: false,
+    macros: macros,
+    fleqn: false
+   });
+}}});
+  </script>
+  <script>window.define = window.backupDefine; window.backupDefine = undefined;</script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.15.1/dist/katex.min.css">
+
+</head>
+
+<body>
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+<div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+  <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#introduction" id="toc-introduction" class="nav-link active" data-scroll-target="#introduction">Introduction</a></li>
+  <li><a href="#setup" id="toc-setup" class="nav-link" data-scroll-target="#setup">Setup</a></li>
+  <li><a href="#exploratory-data-analysis" id="toc-exploratory-data-analysis" class="nav-link" data-scroll-target="#exploratory-data-analysis">Exploratory Data Analysis</a>
+  <ul class="collapse">
+  <li><a href="#load-data" id="toc-load-data" class="nav-link" data-scroll-target="#load-data">Load Data</a></li>
+  <li><a href="#pca" id="toc-pca" class="nav-link" data-scroll-target="#pca">PCA</a></li>
+  <li><a href="#naive-pseudotime-ordering-by-first-pc" id="toc-naive-pseudotime-ordering-by-first-pc" class="nav-link" data-scroll-target="#naive-pseudotime-ordering-by-first-pc">Naive Pseudotime (ordering by first PC)</a></li>
+  </ul></li>
+  <li><a href="#tscan" id="toc-tscan" class="nav-link" data-scroll-target="#tscan">TSCAN</a>
+  <ul class="collapse">
+  <li><a href="#description" id="toc-description" class="nav-link" data-scroll-target="#description">Description</a></li>
+  <li><a href="#cluster-and-order-cells" id="toc-cluster-and-order-cells" class="nav-link" data-scroll-target="#cluster-and-order-cells">Cluster and order cells</a></li>
+  <li><a href="#plot-cell-pseudotime-order" id="toc-plot-cell-pseudotime-order" class="nav-link" data-scroll-target="#plot-cell-pseudotime-order">Plot cell pseudotime order</a></li>
+  <li><a href="#conclusion" id="toc-conclusion" class="nav-link" data-scroll-target="#conclusion">Conclusion</a></li>
+  </ul></li>
+  <li><a href="#slingshot" id="toc-slingshot" class="nav-link" data-scroll-target="#slingshot">Slingshot</a>
+  <ul class="collapse">
+  <li><a href="#description-1" id="toc-description-1" class="nav-link" data-scroll-target="#description-1">Description</a></li>
+  <li><a href="#cluster-and-order-cells-1" id="toc-cluster-and-order-cells-1" class="nav-link" data-scroll-target="#cluster-and-order-cells-1">Cluster and order cells</a></li>
+  <li><a href="#plot-lineage-and-pseudotime-order" id="toc-plot-lineage-and-pseudotime-order" class="nav-link" data-scroll-target="#plot-lineage-and-pseudotime-order">Plot lineage and pseudotime order</a></li>
+  <li><a href="#identify-temporally-expressed-genes-using-gams-generalized-additive-models" id="toc-identify-temporally-expressed-genes-using-gams-generalized-additive-models" class="nav-link" data-scroll-target="#identify-temporally-expressed-genes-using-gams-generalized-additive-models">Identify temporally expressed genes using GAMs (Generalized Additive Models)</a></li>
+  </ul></li>
+  <li><a href="#monocle" id="toc-monocle" class="nav-link" data-scroll-target="#monocle">Monocle</a>
+  <ul class="collapse">
+  <li><a href="#monocle-2" id="toc-monocle-2" class="nav-link" data-scroll-target="#monocle-2">Monocle 2</a>
+  <ul class="collapse">
+  <li><a href="#description-2" id="toc-description-2" class="nav-link" data-scroll-target="#description-2">Description</a></li>
+  <li><a href="#cluster-and-order-cells-2" id="toc-cluster-and-order-cells-2" class="nav-link" data-scroll-target="#cluster-and-order-cells-2">Cluster and order cells</a></li>
+  <li><a href="#plot-pseudotime-order" id="toc-plot-pseudotime-order" class="nav-link" data-scroll-target="#plot-pseudotime-order">Plot pseudotime order</a></li>
+  <li><a href="#conclusion-1" id="toc-conclusion-1" class="nav-link" data-scroll-target="#conclusion-1">Conclusion</a></li>
+  </ul></li>
+  <li><a href="#monocle-3" id="toc-monocle-3" class="nav-link" data-scroll-target="#monocle-3">Monocle 3</a>
+  <ul class="collapse">
+  <li><a href="#description-3" id="toc-description-3" class="nav-link" data-scroll-target="#description-3">Description</a></li>
+  <li><a href="#plot-pseudotime-order-1" id="toc-plot-pseudotime-order-1" class="nav-link" data-scroll-target="#plot-pseudotime-order-1">Plot pseudotime order</a></li>
+  <li><a href="#conclusion-2" id="toc-conclusion-2" class="nav-link" data-scroll-target="#conclusion-2">Conclusion</a></li>
+  </ul></li>
+  </ul></li>
+  <li><a href="#diffusion-maps" id="toc-diffusion-maps" class="nav-link" data-scroll-target="#diffusion-maps">Diffusion Maps</a>
+  <ul class="collapse">
+  <li><a href="#description-4" id="toc-description-4" class="nav-link" data-scroll-target="#description-4">Description</a></li>
+  <li><a href="#cluster-and-order-cells-3" id="toc-cluster-and-order-cells-3" class="nav-link" data-scroll-target="#cluster-and-order-cells-3">Cluster and order cells</a></li>
+  <li><a href="#plot-pseudotime-order-2" id="toc-plot-pseudotime-order-2" class="nav-link" data-scroll-target="#plot-pseudotime-order-2">Plot pseudotime order</a></li>
+  <li><a href="#conclusion-3" id="toc-conclusion-3" class="nav-link" data-scroll-target="#conclusion-3">Conclusion</a></li>
+  </ul></li>
+  <li><a href="#comparing-all-methods" id="toc-comparing-all-methods" class="nav-link" data-scroll-target="#comparing-all-methods">Comparing all methods</a>
+  <ul class="collapse">
+  <li><a href="#conclusion-4" id="toc-conclusion-4" class="nav-link" data-scroll-target="#conclusion-4">Conclusion</a></li>
+  </ul></li>
+  <li><a href="#gene-expression-over-time" id="toc-gene-expression-over-time" class="nav-link" data-scroll-target="#gene-expression-over-time">Gene expression over time</a>
+  <ul class="collapse">
+  <li><a href="#plot-pc1" id="toc-plot-pc1" class="nav-link" data-scroll-target="#plot-pc1">Plot PC1</a></li>
+  <li><a href="#plot-tscan" id="toc-plot-tscan" class="nav-link" data-scroll-target="#plot-tscan">Plot TSCAN</a></li>
+  <li><a href="#plot-monocle-2" id="toc-plot-monocle-2" class="nav-link" data-scroll-target="#plot-monocle-2">Plot Monocle 2</a></li>
+  <li><a href="#plot-monocle-3" id="toc-plot-monocle-3" class="nav-link" data-scroll-target="#plot-monocle-3">Plot Monocle 3</a></li>
+  <li><a href="#plot-diffusion-map" id="toc-plot-diffusion-map" class="nav-link" data-scroll-target="#plot-diffusion-map">Plot Diffusion Map</a></li>
+  </ul></li>
+  <li><a href="#references" id="toc-references" class="nav-link" data-scroll-target="#references">References</a>
+  <ul class="collapse">
+  <li><a href="#prior-coursesworkshops" id="toc-prior-coursesworkshops" class="nav-link" data-scroll-target="#prior-coursesworkshops">Prior Courses/Workshops</a></li>
+  <li><a href="#papersarticles" id="toc-papersarticles" class="nav-link" data-scroll-target="#papersarticles">Papers/Articles</a></li>
+  </ul></li>
+  <li><a href="#code-internals" id="toc-code-internals" class="nav-link" data-scroll-target="#code-internals">Code Internals</a>
+  <ul class="collapse">
+  <li><a href="#session-info" id="toc-session-info" class="nav-link" data-scroll-target="#session-info">Session Info</a></li>
+  <li><a href="#debugging" id="toc-debugging" class="nav-link" data-scroll-target="#debugging">Debugging</a></li>
+  </ul></li>
+  </ul>
+<div class="quarto-alternate-formats"><h2>Other Formats</h2><ul><li><a href="trajectory_inference_and_analysis.pdf"><i class="bi bi-file-pdf"></i>PDF</a></li></ul></div></nav>
+</div>
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">[Pseudotime] Trajectory inference and analysis of scRNA-seq data</h1>
+</div>
+
+
+<div class="quarto-title-meta-author">
+  <div class="quarto-title-meta-heading">Author</div>
+  <div class="quarto-title-meta-heading">Affiliation</div>
+  
+    <div class="quarto-title-meta-contents">
+    <p class="author">Nikhil Vytla </p>
+  </div>
+    <div class="quarto-title-meta-contents">
+        <p class="affiliation">
+            DFCI CCG
+          </p>
+      </div>
+    </div>
+
+<div class="quarto-title-meta">
+
+      
+  
+    
+  </div>
+  
+
+</header>
+
+<section id="introduction" class="level1">
+<h1>Introduction</h1>
+<p>This notebook encompasses a brief review of trajectory / path / lineage tracing utilizing <strong>pseudotime</strong> strategies with several modern R libraries, including <code>Monocle</code>, <code>Slingshot</code>, <code>TSCAN</code>, and <code>destiny</code>.</p>
+<p>What is <strong>pseudotime</strong>? <em>The distance between a cell and the start of the trajectory, measured along the shortest path. The trajectory’s total length is defined in terms of the total amount of transcriptional change that a cell undergoes as it moves from the starting state to the end state</em> (<a href="https://cole-trapnell-lab.github.io/monocle-release/docs/#constructing-single-cell-trajectories">Trapnell</a>).</p>
+<p>For the purpose of this playground, we will use a SMART-Seq2 single cell RNA-seq data from <a href="http://science.sciencemag.org/content/343/6167/193">Single-Cell RNA-Seq Reveals Dynamic, Random Monoallelic Gene Expression in Mammalian Cells (Deng et al.&nbsp;2014)</a>. One relevant detail from their paper: “To investigate allele-specific gene expression at single-cell resolution, we isolated 269 individual cells dissociated from in vivo F1 embryos (CAST/EiJ × C57BL/6J, hereafter abbreviated as CAST and C57, respectively) from oocyte to blastocyst stages of mouse preimplantation development (PD)”.</p>
+<p>Several of the methods referred to in this notebook have been sourced from original benchmarking work performed in <a href="https://pubmed.ncbi.nlm.nih.gov/30936559/">Saelens et al.&nbsp;2019</a>.</p>
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="images/sampleguidelines_saelens.png" class="img-fluid figure-img"></p>
+<figcaption class="figure-caption">Sample guidelines for trajectory inference methods, adapted from Saelens et al.&nbsp;2019.</figcaption>
+</figure>
+</div>
+</section>
+<section id="setup" class="level1">
+<h1>Setup</h1>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">require</span>(<span class="st">"BiocManager"</span>, <span class="at">quietly =</span> <span class="cn">TRUE</span>))</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="fu">install.packages</span>(<span class="st">"BiocManager"</span>)</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>BiocManager<span class="sc">::</span><span class="fu">install</span>(<span class="fu">c</span>(<span class="st">"SingleCellExperiment"</span>, <span class="st">"TSCAN"</span>, <span class="st">"M3Drop"</span>, <span class="st">"monocle"</span>, <span class="st">"destiny"</span>, <span class="st">"scater"</span>, <span class="st">"slingshot"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Bioconductor</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(SingleCellExperiment)</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(TSCAN)</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(M3Drop)</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(monocle)</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(destiny)</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(scater)</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(slingshot)</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Other</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(ggplot2)</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(ggthemes)</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(ggbeeswarm)</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(corrplot)</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(Polychrome)</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="exploratory-data-analysis" class="level1">
+<h1>Exploratory Data Analysis</h1>
+<section id="load-data" class="level2">
+<h2 class="anchored" data-anchor-id="load-data">Load Data</h2>
+<p>Optional: this data is originally downloaded from the Wellcome Sanger Institute.</p>
+<pre><code>#!/usr/bin/env bash
+
+# download course data
+aws --endpoint-url https://cog.sanger.ac.uk --no-sign-request s3 cp s3://singlecellcourse/data data --recursive</code></pre>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>deng_SCE <span class="ot">&lt;-</span> <span class="fu">readRDS</span>(<span class="st">"../pseudotime_data/deng/deng-reads.rds"</span>)</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>image_dir <span class="ot">&lt;-</span> <span class="st">"../pseudotime_data/images/"</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">structure</span>(deng_SCE)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>class: SingleCellExperiment 
+dim: 22431 268 
+metadata(0):
+assays(2): counts logcounts
+rownames(22431): Hvcn1 Gbp7 ... Sox5 Alg11
+rowData names(10): feature_symbol is_feature_control ... total_counts
+  log10_total_counts
+colnames(268): 16cell 16cell.1 ... zy.2 zy.3
+colData names(30): cell_type2 cell_type1 ... pct_counts_ERCC
+  is_cell_control
+reducedDimNames(0):
+mainExpName: NULL
+altExpNames(0):</code></pre>
+</div>
+</div>
+</section>
+<section id="pca" class="level2">
+<h2 class="anchored" data-anchor-id="pca">PCA</h2>
+<p>Prior to using pseudotime methods, let’s take a first look at our dataset by using PCA. We see that PCA performs relatively well up until distinguishing between the cell types <code>earlyblast</code>, <code>midblast</code>, and <code>lateblast</code>.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Re-order the levels of the factor storing the cell developmental stage.</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>cell_type2 <span class="ot">&lt;-</span> <span class="fu">factor</span>(deng_SCE<span class="sc">$</span>cell_type2,</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>                              <span class="at">levels =</span> <span class="fu">c</span>(<span class="st">"zy"</span>, <span class="st">"early2cell"</span>, <span class="st">"mid2cell"</span>, <span class="st">"late2cell"</span>,</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>                                         <span class="st">"4cell"</span>, <span class="st">"8cell"</span>, <span class="st">"16cell"</span>, <span class="st">"earlyblast"</span>,</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>                                         <span class="st">"midblast"</span>, <span class="st">"lateblast"</span>)</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>                              )</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>cellLabels <span class="ot">&lt;-</span> deng_SCE<span class="sc">$</span>cell_type2</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>deng <span class="ot">&lt;-</span> <span class="fu">counts</span>(deng_SCE)</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(deng) <span class="ot">&lt;-</span> cellLabels</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Run PCA</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>deng_SCE <span class="ot">&lt;-</span> <span class="fu">runPCA</span>(deng_SCE, <span class="at">ncomponent =</span> <span class="dv">5</span>)</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Change color palette with library(Polychrome)</span></span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">723451</span>) <span class="co"># for reproducibility</span></span>
+<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a>my_color <span class="ot">&lt;-</span> <span class="fu">createPalette</span>(<span class="dv">10</span>, <span class="fu">c</span>(<span class="st">"#010101"</span>, <span class="st">"#ff0000"</span>), <span class="at">M=</span><span class="dv">1000</span>)</span>
+<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a><span class="fu">names</span>(my_color) <span class="ot">&lt;-</span> <span class="fu">unique</span>(<span class="fu">as.character</span>(deng_SCE<span class="sc">$</span>cell_type2))</span>
+<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a><span class="co"># Use the reducedDim function to access the PCA and store the results.</span></span>
+<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a>pca_df <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(<span class="at">PC1 =</span> <span class="fu">reducedDim</span>(deng_SCE,<span class="st">"PCA"</span>)[,<span class="dv">1</span>],</span>
+<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a>                     <span class="at">PC2 =</span> <span class="fu">reducedDim</span>(deng_SCE,<span class="st">"PCA"</span>)[,<span class="dv">2</span>],</span>
+<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a>                     <span class="at">cell_type2 =</span> deng_SCE<span class="sc">$</span>cell_type2)</span>
+<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-26"><a href="#cb7-26" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(<span class="at">data =</span> pca_df) <span class="sc">+</span> </span>
+<span id="cb7-27"><a href="#cb7-27" aria-hidden="true" tabindex="-1"></a>  <span class="fu">geom_point</span>(<span class="at">mapping =</span> <span class="fu">aes</span>(<span class="at">x =</span> PC1, <span class="at">y =</span> PC2, <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb7-28"><a href="#cb7-28" aria-hidden="true" tabindex="-1"></a>  <span class="fu">scale_colour_manual</span>(<span class="at">values =</span> my_color) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span> </span>
+<span id="cb7-29"><a href="#cb7-29" aria-hidden="true" tabindex="-1"></a>  <span class="fu">xlab</span>(<span class="st">"PC1"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"PC2"</span>) <span class="sc">+</span> <span class="fu">ggtitle</span>(<span class="st">"PC biplot"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-5-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+<section id="naive-pseudotime-ordering-by-first-pc" class="level2">
+<h2 class="anchored" data-anchor-id="naive-pseudotime-ordering-by-first-pc">Naive Pseudotime (ordering by first PC)</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Add PCA data (first two PCs) to the deng_SCE object.</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="co"># deng_SCE$PC1 &lt;- reducedDim(deng_SCE, "PCA")[,1]</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="co"># deng_SCE$PC2 &lt;- reducedDim(deng_SCE, "PCA")[,2]</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(pca_df, <span class="fu">aes</span>(<span class="at">x =</span> PC1, <span class="at">y =</span> cell_type2, <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">scale_colour_manual</span>(<span class="at">values =</span> my_color) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"PC1"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"Timepoint"</span>) <span class="sc">+</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by first principal component"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-6-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggsave</span>(<span class="fu">paste0</span>(image_dir, <span class="st">"/pseudotime_PC1.png"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Saving 7 x 5 in image
+Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+</div>
+<p>As the plot above shows, PCA struggles to order cells early and late in the developmental timeline, but overall does a relatively good job of ordering other cells by developmental time.</p>
+<p>Now, let’s explore bespoke pseudotime methods.</p>
+</section>
+</section>
+<section id="tscan" class="level1">
+<h1>TSCAN</h1>
+<section id="description" class="level2">
+<h2 class="anchored" data-anchor-id="description">Description</h2>
+<p>TSCAN (<a href="https://academic.oup.com/nar/article/44/13/e117/2457590">Ji and Ji 2019</a>) combines clustering with pseudotime analysis. First it clusters the cells using <code>mclust</code>, which is based on a mixture of normal distributions. Then it builds a minimum spanning tree (MST) to connect the clusters. The branch of this MST that connects the largest number of clusters is designated the main branch, and is used to determine pseudotime.</p>
+<blockquote class="blockquote">
+<p><strong>Note</strong>: From a connected graph with weighted edges, the MST is the tree structure that connects all the nodes in a manner that minimizes the total edge weight. Trajectory inference methods that use MST are based on the notion that nodes (cells/clusters of cells) and their connections represent the geometric shape of the data cloud in a two-dimension space.</p>
+</blockquote>
+</section>
+<section id="cluster-and-order-cells" class="level2">
+<h2 class="anchored" data-anchor-id="cluster-and-order-cells">Cluster and order cells</h2>
+<p>First, let’s try to use all available genes to order cells.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>procdeng <span class="ot">&lt;-</span> TSCAN<span class="sc">::</span><span class="fu">preprocess</span>(<span class="fu">counts</span>(deng_SCE))</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(procdeng) <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">ncol</span>(deng_SCE)</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>dengclust <span class="ot">&lt;-</span> TSCAN<span class="sc">::</span><span class="fu">exprmclust</span>(procdeng, <span class="at">clusternum =</span> <span class="dv">10</span>)</span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>TSCAN<span class="sc">::</span><span class="fu">plotmclust</span>(dengclust)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-8-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Note: This only contains 221 of 268 genes... what's going on?</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>dengorderTSCAN <span class="ot">&lt;-</span> TSCAN<span class="sc">::</span><span class="fu">TSCANorder</span>(dengclust, <span class="at">orderonly =</span> <span class="cn">FALSE</span>)</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>pseudotime_order_tscan <span class="ot">&lt;-</span> <span class="fu">as.character</span>(dengorderTSCAN<span class="sc">$</span>sample_name)</span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>pseudotime_order_tscan <span class="ot">&lt;-</span> <span class="cn">NA</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>pseudotime_order_tscan[<span class="fu">as.numeric</span>(dengorderTSCAN<span class="sc">$</span>sample_name)] <span class="ot">&lt;-</span> </span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    dengorderTSCAN<span class="sc">$</span>Pseudotime</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<blockquote class="blockquote">
+<p><strong>⚠️</strong> <strong>Alert</strong>: In this scenario, TSCAN only provided pseudotime values for 221 of 268 cells, silently returning missing values for non-assigned cells.</p>
+</blockquote>
+<p>Let’s examine which timepoints have been assigned to each state:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>cellLabels[dengclust<span class="sc">$</span>clusterid <span class="sc">==</span> <span class="dv">10</span>]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code> [1] late2cell late2cell late2cell late2cell late2cell late2cell late2cell
+ [8] late2cell late2cell late2cell
+10 Levels: zy early2cell mid2cell late2cell 4cell 8cell 16cell ... lateblast</code></pre>
+</div>
+</div>
+</section>
+<section id="plot-cell-pseudotime-order" class="level2">
+<h2 class="anchored" data-anchor-id="plot-cell-pseudotime-order">Plot cell pseudotime order</h2>
+<p>Now, let’s plot TSCAN’s pseudotime order:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(<span class="fu">as.data.frame</span>(<span class="fu">colData</span>(deng_SCE)), </span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>       <span class="fu">aes</span>(<span class="at">x =</span> pseudotime_order_tscan, </span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>           <span class="at">y =</span> cell_type2, <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">scale_color_manual</span>(<span class="at">values =</span> my_color) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"TSCAN pseudotime"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"Timepoint"</span>) <span class="sc">+</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by TSCAN pseudotime"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 47 rows containing missing values or values outside the scale range
+(`position_quasirandom()`).</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-11-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggsave</span>(<span class="fu">paste0</span>(image_dir, <span class="st">"/pseudotime_TSCAN.png"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Saving 7 x 5 in image
+Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 47 rows containing missing values or values outside the scale range
+(`position_quasirandom()`).</code></pre>
+</div>
+</div>
+</section>
+<section id="conclusion" class="level2">
+<h2 class="anchored" data-anchor-id="conclusion">Conclusion</h2>
+<p>In this scenario, TSCAN gets the development trajectory the “wrong way around”, in the sense that later pseudotime values correspond to early timepoints and vice versa.</p>
+<p>This is not inherently a problem (it is easy enough to reverse the ordering to get the intuitive interpretation of pseudotime), <strong>however</strong>, on this dataset, it’s tough to argue that TSCAN performs better than PCA (perhaps expected as TSCAN is based on PCA).</p>
+</section>
+</section>
+<section id="slingshot" class="level1">
+<h1>Slingshot</h1>
+<section id="description-1" class="level2">
+<h2 class="anchored" data-anchor-id="description-1">Description</h2>
+<p>Slingshot (<a href="https://bmcgenomics.biomedcentral.com/articles/10.1186/s12864-018-4772-0">Street et al.&nbsp;2018</a>) is a single-cell lineage inference tool. It can work with datasets with multiple branches.</p>
+<p>Slingshot has two stages:</p>
+<ol type="1">
+<li>inference of the global lineage structure using MST on clustered data points and</li>
+<li>inference of pseudotime variables for cells along each lineage by fitting “simultaneous principal curves” across multiple lineages.</li>
+</ol>
+<p>Slingshot’s first stage uses a cluster-based MST to stably identify the key elements of the global lineage structure, i.e., the number of lineages and where they branch. This allows us to identify novel lineages while also accommodating the use of domain-specific knowledge to supervise parts of the tree (e.g., terminal cellular states).</p>
+<p>For the second stage, Slingshot proposes a novel method called “simultaneous principal curves”, to fit smooth branching curves to these lineages, thereby translating the knowledge of global lineage structure into stable estimates of the underlying cell-level pseudotime variable for each lineage.</p>
+<p>In Saelens et al., Slingshot consistently performs well across different datasets.</p>
+<blockquote class="blockquote">
+<p><strong>Note</strong>: Principal curves are smooth one-dimensional curves that pass through the middle of a p-dimensional data set, providing a nonlinear summary of the data. They are nonparametric, and their shape is suggested by the data (Hastie et al)(Hastie and Stuetzle <a href="https://biocellgen-public.svi.edu.au/mig_2019_scrnaseq-workshop/trajectory-inference.html#ref-Hastie1989-pd">1989</a>).</p>
+</blockquote>
+</section>
+<section id="cluster-and-order-cells-1" class="level2">
+<h2 class="anchored" data-anchor-id="cluster-and-order-cells-1">Cluster and order cells</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb22"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Run Slingshot</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>deng_SCE <span class="ot">&lt;-</span> <span class="fu">slingshot</span>(deng_SCE, <span class="at">clusterLabels =</span> <span class="st">'cell_type2'</span>, <span class="at">reducedDim =</span> <span class="st">"PCA"</span>,</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>                      <span class="at">allow.breaks =</span> <span class="cn">FALSE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb23"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="fu">summary</span>(deng_SCE<span class="sc">$</span>slingPseudotime_1)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+    0.0   231.7   265.8   269.9   360.6   409.4      52 </code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb25"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Get lineages inferred by Slingshot</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>lnes <span class="ot">&lt;-</span> <span class="fu">getLineages</span>(<span class="fu">reducedDim</span>(deng_SCE,<span class="st">"PCA"</span>),</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>                    deng_SCE<span class="sc">$</span>cell_type2)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb26"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>lnes<span class="sc">@</span>metadata<span class="sc">$</span>lineages</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>$Lineage1
+[1] "zy"         "early2cell" "mid2cell"   "late2cell"  "4cell"     
+[6] "16cell"     "midblast"   "earlyblast"
+
+$Lineage2
+[1] "zy"         "early2cell" "mid2cell"   "late2cell"  "4cell"     
+[6] "16cell"     "midblast"   "lateblast" 
+
+$Lineage3
+[1] "zy"         "early2cell" "mid2cell"   "late2cell"  "4cell"     
+[6] "16cell"     "8cell"     </code></pre>
+</div>
+</div>
+</section>
+<section id="plot-lineage-and-pseudotime-order" class="level2">
+<h2 class="anchored" data-anchor-id="plot-lineage-and-pseudotime-order">Plot lineage and pseudotime order</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb28"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Plot lineage overlay on the original PCA plot</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a><span class="fu">plot</span>(<span class="fu">reducedDims</span>(deng_SCE)<span class="sc">$</span>PCA, <span class="at">col =</span> my_color[<span class="fu">as.character</span>(deng_SCE<span class="sc">$</span>cell_type2)], </span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>     <span class="at">pch=</span><span class="dv">16</span>, </span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>     <span class="at">asp =</span> <span class="dv">1</span>)</span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a><span class="fu">legend</span>(<span class="st">"bottomleft"</span>,<span class="at">legend =</span> <span class="fu">names</span>(my_color[<span class="fu">levels</span>(deng_SCE<span class="sc">$</span>cell_type2)]),  </span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>       <span class="at">fill =</span> my_color[<span class="fu">levels</span>(deng_SCE<span class="sc">$</span>cell_type2)])</span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a><span class="fu">lines</span>(<span class="fu">SlingshotDataSet</span>(deng_SCE), <span class="at">lwd=</span><span class="dv">2</span>, <span class="at">type =</span> <span class="st">'lineages'</span>, <span class="at">col =</span> <span class="fu">c</span>(<span class="st">"black"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-17-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb29"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co"># </span><span class="al">NOTE</span><span class="co">/</span><span class="al">TODO</span><span class="co">: custom subset because as.data.frame does NOT work on full colData due to custom type PseudotimeOrdering of slingshot column!</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>slingshot_df <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">colData</span>(deng_SCE)[, <span class="fu">names</span>(<span class="fu">colData</span>(deng_SCE)) <span class="sc">%in%</span> </span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>          <span class="fu">c</span>(<span class="st">"cell_type2"</span>, <span class="st">"slingPseudotime_1"</span>, <span class="st">"slingPseudotime_2"</span>, <span class="st">"slingPseudotime_3"</span>)])</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb30"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Plot pseudotime inferred by slingshot by cell types (lineage 1)</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(slingshot_df, <span class="fu">aes</span>(<span class="at">x =</span> slingPseudotime_1, <span class="at">y =</span> cell_type2, </span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a>                              <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"1st Slingshot pseudotime"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"cell type"</span>) <span class="sc">+</span></span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by 1st Slingshot pseudotime"</span>)<span class="sc">+</span><span class="fu">scale_colour_manual</span>(<span class="at">values =</span> my_color)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 52 rows containing missing values or values outside the scale range
+(`position_quasirandom()`).</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-19-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb33"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggsave</span>(<span class="fu">paste0</span>(image_dir, <span class="st">"/pseudotime_slingshot1.png"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Saving 7 x 5 in image
+Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 52 rows containing missing values or values outside the scale range
+(`position_quasirandom()`).</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb36"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(slingshot_df, <span class="fu">aes</span>(<span class="at">x =</span> slingPseudotime_2, <span class="at">y =</span> cell_type2, </span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a>                              <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"2nd Slingshot pseudotime"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"cell type"</span>) <span class="sc">+</span></span>
+<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by 2nd Slingshot pseudotime"</span>)<span class="sc">+</span><span class="fu">scale_colour_manual</span>(<span class="at">values =</span> my_color)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 54 rows containing missing values or values outside the scale range
+(`position_quasirandom()`).</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-21-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb39"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(slingshot_df, <span class="fu">aes</span>(<span class="at">x =</span> slingPseudotime_1, <span class="at">y =</span> slingPseudotime_2, </span>
+<span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a>                              <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb39-3"><a href="#cb39-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb39-4"><a href="#cb39-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"1st Slingshot pseudotime"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"2nd Slingshot pseudotime"</span>) <span class="sc">+</span></span>
+<span id="cb39-5"><a href="#cb39-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by 1st and 2nd Slingshot pseudotimes"</span>)<span class="sc">+</span><span class="fu">scale_colour_manual</span>(<span class="at">values =</span> my_color)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 54 rows containing missing values or values outside the scale range
+(`position_quasirandom()`).</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-22-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<blockquote class="blockquote">
+<p><strong>Note</strong>: You can also supply a start and an end cluster to <code>Slingshot</code>.</p>
+<p>⚠️ <strong>Comment</strong>: Did you notice the ordering of clusters in the lineage predicted for the <code>16cells</code> state? There is an outlier-like cell in the <code>16cell</code> group, find the outlier and remove it, then re-run <code>Slingshot</code>.</p>
+</blockquote>
+</section>
+<section id="identify-temporally-expressed-genes-using-gams-generalized-additive-models" class="level2">
+<h2 class="anchored" data-anchor-id="identify-temporally-expressed-genes-using-gams-generalized-additive-models">Identify temporally expressed genes using GAMs (Generalized Additive Models)</h2>
+<p>After running Slingshot, we may want to find genes that change their expression over the course of development.</p>
+<p>Let’s explore one possible method of analysis on the 100 most variable genes in this dataset. We will first regress each gene on the pseudotime variable we have created using a general additive model (GAM). This will allow us to detect <em>non-linear</em> patterns in gene expression.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb41"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb41-1"><a href="#cb41-1" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(gam)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Loading required package: foreach</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Loaded gam 1.22-4</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>
+Attaching package: 'gam'</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>The following object is masked from 'package:VGAM':
+
+    s</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb46"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb46-1"><a href="#cb46-1" aria-hidden="true" tabindex="-1"></a>t <span class="ot">&lt;-</span> deng_SCE<span class="sc">$</span>slingPseudotime_1</span>
+<span id="cb46-2"><a href="#cb46-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-3"><a href="#cb46-3" aria-hidden="true" tabindex="-1"></a><span class="co"># For demonstration purposes, only look at the 100 most variable genes </span></span>
+<span id="cb46-4"><a href="#cb46-4" aria-hidden="true" tabindex="-1"></a>Y <span class="ot">&lt;-</span> <span class="fu">log1p</span>(<span class="fu">assay</span>(deng_SCE,<span class="st">"logcounts"</span>))</span>
+<span id="cb46-5"><a href="#cb46-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-6"><a href="#cb46-6" aria-hidden="true" tabindex="-1"></a>var100 <span class="ot">&lt;-</span> <span class="fu">names</span>(<span class="fu">sort</span>(<span class="fu">apply</span>(Y,<span class="dv">1</span>,var),<span class="at">decreasing =</span> <span class="cn">TRUE</span>))[<span class="dv">1</span><span class="sc">:</span><span class="dv">100</span>]</span>
+<span id="cb46-7"><a href="#cb46-7" aria-hidden="true" tabindex="-1"></a>Y <span class="ot">&lt;-</span> Y[var100,]</span>
+<span id="cb46-8"><a href="#cb46-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-9"><a href="#cb46-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Fit a GAM with a loess term for pseudotime</span></span>
+<span id="cb46-10"><a href="#cb46-10" aria-hidden="true" tabindex="-1"></a>gam.pval <span class="ot">&lt;-</span> <span class="fu">apply</span>(Y,<span class="dv">1</span>,<span class="cf">function</span>(z){</span>
+<span id="cb46-11"><a href="#cb46-11" aria-hidden="true" tabindex="-1"></a>    d <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(<span class="at">z=</span>z, <span class="at">t=</span>t)</span>
+<span id="cb46-12"><a href="#cb46-12" aria-hidden="true" tabindex="-1"></a>    <span class="fu">suppressWarnings</span>({</span>
+<span id="cb46-13"><a href="#cb46-13" aria-hidden="true" tabindex="-1"></a>      tmp <span class="ot">&lt;-</span> <span class="fu">gam</span>(z <span class="sc">~</span> <span class="fu">lo</span>(t), <span class="at">data=</span>d)</span>
+<span id="cb46-14"><a href="#cb46-14" aria-hidden="true" tabindex="-1"></a>    })</span>
+<span id="cb46-15"><a href="#cb46-15" aria-hidden="true" tabindex="-1"></a>    p <span class="ot">&lt;-</span> <span class="fu">summary</span>(tmp)[<span class="dv">3</span>][[<span class="dv">1</span>]][<span class="dv">2</span>,<span class="dv">3</span>]</span>
+<span id="cb46-16"><a href="#cb46-16" aria-hidden="true" tabindex="-1"></a>    p</span>
+<span id="cb46-17"><a href="#cb46-17" aria-hidden="true" tabindex="-1"></a>})</span>
+<span id="cb46-18"><a href="#cb46-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-19"><a href="#cb46-19" aria-hidden="true" tabindex="-1"></a><span class="do">## Plot expression for top 100 genes </span></span>
+<span id="cb46-20"><a href="#cb46-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-21"><a href="#cb46-21" aria-hidden="true" tabindex="-1"></a>topgenes <span class="ot">&lt;-</span> <span class="fu">names</span>(<span class="fu">sort</span>(gam.pval, <span class="at">decreasing =</span> <span class="cn">FALSE</span>))[<span class="dv">1</span><span class="sc">:</span><span class="dv">100</span>]</span>
+<span id="cb46-22"><a href="#cb46-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-23"><a href="#cb46-23" aria-hidden="true" tabindex="-1"></a>heatdata <span class="ot">&lt;-</span> <span class="fu">assays</span>(deng_SCE)<span class="sc">$</span>logcounts[topgenes, <span class="fu">order</span>(t, <span class="at">na.last =</span> <span class="cn">NA</span>)]</span>
+<span id="cb46-24"><a href="#cb46-24" aria-hidden="true" tabindex="-1"></a>heatclus <span class="ot">&lt;-</span> deng_SCE<span class="sc">$</span>cell_type2[<span class="fu">order</span>(t, <span class="at">na.last =</span> <span class="cn">NA</span>)]</span>
+<span id="cb46-25"><a href="#cb46-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-26"><a href="#cb46-26" aria-hidden="true" tabindex="-1"></a><span class="fu">heatmap</span>(heatdata, <span class="at">Colv =</span> <span class="cn">NA</span>,</span>
+<span id="cb46-27"><a href="#cb46-27" aria-hidden="true" tabindex="-1"></a>        <span class="at">ColSideColors =</span> my_color[heatclus],<span class="at">cexRow =</span> <span class="dv">1</span>,<span class="at">cexCol =</span> <span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-23-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+</section>
+<section id="monocle" class="level1">
+<h1>Monocle</h1>
+<p>The original <code>Monocle</code> (<a href="https://pubmed.ncbi.nlm.nih.gov/24658644/">Trapnell et al.&nbsp;2014</a>) method skips the clustering stage of TSCAN and directly builds a MST on a reduced dimension representation (using “ICA”) of the cells to connect all cells. <code>Monocle</code> then identifies the longest path in this tree as the main branch and uses this to determine pseudotime. Priors are required such as start/end state and the number of branching events.</p>
+<p>If the data contains diverging trajectories (i.e.&nbsp;one cell type differentiates into two different cell-types), monocle can identify these. Each of the resulting forked paths is defined as a separate cell state.</p>
+<section id="monocle-2" class="level2">
+<h2 class="anchored" data-anchor-id="monocle-2">Monocle 2</h2>
+<section id="description-2" class="level3">
+<h3 class="anchored" data-anchor-id="description-2">Description</h3>
+<p>Monocle 2 (<a href="https://pubmed.ncbi.nlm.nih.gov/28825705/">Qiu et al.&nbsp;2017</a>) uses a different approach, with dimensionality reduction and ordering performed by reverse graph embedding (RGE), allowing it to detect branching events in an unsupervised manner. RGE, a machine-learning strategy, learns a “principal graph” to describe the single-cell dataset. RGE also learns the mapping function of data points on the trajectory back to the original high dimensional space simultaneously. In doing so, it aims to position the latent points in the lower dimension space (along the trajectory) while also ensuring their corresponding positions in the input dimension are “neighbors”.</p>
+<p>There are different ways of implementing the RGE framework, <code>Monocle 2</code> uses <code>DDRTree</code>(Discriminative dimensionality reduction via learning a tree) by default.</p>
+<p><code>DDRTree</code> learns latent points and the projection of latent points to the points in original input space, which is equivalent to “dimension reduction”. In addition, it simultaneously learns ‘principal graph’ for K-means soft clustered centroids for the latent points. Principal graph is the spanning tree of those centroids.</p>
+<p>DDRTree returns a principal tree of the centroids of cell clusters in low dimension, pseudotime is derived for individual cells by calculating geodesic distance of their projections onto the tree from the root (user-defined or arbitrarily assigned).</p>
+<blockquote class="blockquote">
+<p><strong>Note</strong>: Informally, a principal graph is like a principal curve which passes through the “middle” of a data set but is allowed to have branches.</p>
+</blockquote>
+</section>
+<section id="cluster-and-order-cells-2" class="level3">
+<h3 class="anchored" data-anchor-id="cluster-and-order-cells-2">Cluster and order cells</h3>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb47"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb47-1"><a href="#cb47-1" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(monocle)</span>
+<span id="cb47-2"><a href="#cb47-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-3"><a href="#cb47-3" aria-hidden="true" tabindex="-1"></a><span class="co"># d &lt;- deng_SCE[m3dGenes,]</span></span>
+<span id="cb47-4"><a href="#cb47-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-5"><a href="#cb47-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Feature selection </span></span>
+<span id="cb47-6"><a href="#cb47-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-7"><a href="#cb47-7" aria-hidden="true" tabindex="-1"></a>deng <span class="ot">&lt;-</span> <span class="fu">counts</span>(deng_SCE)</span>
+<span id="cb47-8"><a href="#cb47-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb47-9"><a href="#cb47-9" aria-hidden="true" tabindex="-1"></a>m3dGenes <span class="ot">&lt;-</span> <span class="fu">as.character</span>(</span>
+<span id="cb47-10"><a href="#cb47-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">M3DropFeatureSelection</span>(deng)<span class="sc">$</span>Gene</span>
+<span id="cb47-11"><a href="#cb47-11" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning in bg__calc_variables(expr_mat): Warning: Removing 1134 undetected
+genes.</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-24-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb49"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb49-1"><a href="#cb49-1" aria-hidden="true" tabindex="-1"></a>d <span class="ot">&lt;-</span> deng_SCE[<span class="fu">which</span>(<span class="fu">rownames</span>(deng_SCE) <span class="sc">%in%</span> m3dGenes), ]</span>
+<span id="cb49-2"><a href="#cb49-2" aria-hidden="true" tabindex="-1"></a>d <span class="ot">&lt;-</span> d[<span class="sc">!</span><span class="fu">duplicated</span>(<span class="fu">rownames</span>(d)), ]</span>
+<span id="cb49-3"><a href="#cb49-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb49-4"><a href="#cb49-4" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(d) <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">ncol</span>(d)</span>
+<span id="cb49-5"><a href="#cb49-5" aria-hidden="true" tabindex="-1"></a>geneNames <span class="ot">&lt;-</span> <span class="fu">rownames</span>(d)</span>
+<span id="cb49-6"><a href="#cb49-6" aria-hidden="true" tabindex="-1"></a><span class="fu">rownames</span>(d) <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">nrow</span>(d)</span>
+<span id="cb49-7"><a href="#cb49-7" aria-hidden="true" tabindex="-1"></a>pd <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(<span class="at">timepoint =</span> cellLabels)</span>
+<span id="cb49-8"><a href="#cb49-8" aria-hidden="true" tabindex="-1"></a>pd <span class="ot">&lt;-</span> <span class="fu">new</span>(<span class="st">"AnnotatedDataFrame"</span>, <span class="at">data=</span>pd)</span>
+<span id="cb49-9"><a href="#cb49-9" aria-hidden="true" tabindex="-1"></a>fd <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(<span class="at">gene_short_name =</span> geneNames)</span>
+<span id="cb49-10"><a href="#cb49-10" aria-hidden="true" tabindex="-1"></a>fd <span class="ot">&lt;-</span> <span class="fu">new</span>(<span class="st">"AnnotatedDataFrame"</span>, <span class="at">data=</span>fd)</span>
+<span id="cb49-11"><a href="#cb49-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb49-12"><a href="#cb49-12" aria-hidden="true" tabindex="-1"></a>dCellData <span class="ot">&lt;-</span> <span class="fu">newCellDataSet</span>(<span class="fu">counts</span>(d), <span class="at">phenoData =</span> pd, <span class="at">featureData =</span> fd)</span>
+<span id="cb49-13"><a href="#cb49-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb49-14"><a href="#cb49-14" aria-hidden="true" tabindex="-1"></a>dCellData <span class="ot">&lt;-</span> <span class="fu">setOrderingFilter</span>(dCellData, <span class="fu">which</span>(geneNames <span class="sc">%in%</span> m3dGenes))</span>
+<span id="cb49-15"><a href="#cb49-15" aria-hidden="true" tabindex="-1"></a>dCellData <span class="ot">&lt;-</span> <span class="fu">estimateSizeFactors</span>(dCellData)</span>
+<span id="cb49-16"><a href="#cb49-16" aria-hidden="true" tabindex="-1"></a>dCellDataSet <span class="ot">&lt;-</span> <span class="fu">reduceDimension</span>(dCellData,<span class="at">reduction_method =</span> <span class="st">"DDRTree"</span>, <span class="at">pseudo_expr =</span> <span class="dv">1</span>)</span>
+<span id="cb49-17"><a href="#cb49-17" aria-hidden="true" tabindex="-1"></a>dCellDataSet <span class="ot">&lt;-</span> <span class="fu">orderCells</span>(dCellDataSet, <span class="at">reverse =</span> <span class="cn">FALSE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning in dfs(graph = graph, root = root, mode = mode, unreachable =
+unreachable, : Argument `neimode' is deprecated; use `mode' instead
+Warning in dfs(graph = graph, root = root, mode = mode, unreachable =
+unreachable, : Argument `neimode' is deprecated; use `mode' instead</code></pre>
+</div>
+</div>
+</section>
+<section id="plot-pseudotime-order" class="level3">
+<h3 class="anchored" data-anchor-id="plot-pseudotime-order">Plot pseudotime order</h3>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb51"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb51-1"><a href="#cb51-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plot_cell_trajectory</span>(dCellDataSet)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: `select_()` was deprecated in dplyr 0.7.0.
+ℹ Please use `select()` instead.
+ℹ The deprecated feature was likely used in the monocle package.
+  Please report the issue to the authors.</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-26-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb53"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb53-1"><a href="#cb53-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Store trajectory ordering</span></span>
+<span id="cb53-2"><a href="#cb53-2" aria-hidden="true" tabindex="-1"></a>pseudotime_monocle2 <span class="ot">&lt;-</span></span>
+<span id="cb53-3"><a href="#cb53-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">data.frame</span>(</span>
+<span id="cb53-4"><a href="#cb53-4" aria-hidden="true" tabindex="-1"></a>        <span class="at">Timepoint =</span> <span class="fu">phenoData</span>(dCellDataSet)<span class="sc">$</span>timepoint,</span>
+<span id="cb53-5"><a href="#cb53-5" aria-hidden="true" tabindex="-1"></a>        <span class="at">pseudotime =</span> <span class="fu">phenoData</span>(dCellDataSet)<span class="sc">$</span>Pseudotime,</span>
+<span id="cb53-6"><a href="#cb53-6" aria-hidden="true" tabindex="-1"></a>        <span class="at">State =</span> <span class="fu">phenoData</span>(dCellDataSet)<span class="sc">$</span>State</span>
+<span id="cb53-7"><a href="#cb53-7" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb53-8"><a href="#cb53-8" aria-hidden="true" tabindex="-1"></a><span class="fu">rownames</span>(pseudotime_monocle2) <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span><span class="fu">ncol</span>(d)</span>
+<span id="cb53-9"><a href="#cb53-9" aria-hidden="true" tabindex="-1"></a>pseudotime_order_monocle <span class="ot">&lt;-</span></span>
+<span id="cb53-10"><a href="#cb53-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">rownames</span>(pseudotime_monocle2[<span class="fu">order</span>(pseudotime_monocle2<span class="sc">$</span>pseudotime), ])</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>Let’s compare the inferred pseudotime to the known sampling timepoints.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb54"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb54-1"><a href="#cb54-1" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>pseudotime_monocle2 <span class="ot">&lt;-</span> pseudotime_monocle2<span class="sc">$</span>pseudotime</span>
+<span id="cb54-2"><a href="#cb54-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb54-3"><a href="#cb54-3" aria-hidden="true" tabindex="-1"></a>monocle2_df <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(</span>
+<span id="cb54-4"><a href="#cb54-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">colData</span>(deng_SCE)[, <span class="sc">!</span><span class="fu">names</span>(<span class="fu">colData</span>(deng_SCE)) <span class="sc">%in%</span> <span class="fu">c</span>(<span class="st">"slingshot"</span>)])</span>
+<span id="cb54-5"><a href="#cb54-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb54-6"><a href="#cb54-6" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(monocle2_df, </span>
+<span id="cb54-7"><a href="#cb54-7" aria-hidden="true" tabindex="-1"></a>       <span class="fu">aes</span>(<span class="at">x =</span> pseudotime_monocle2, </span>
+<span id="cb54-8"><a href="#cb54-8" aria-hidden="true" tabindex="-1"></a>           <span class="at">y =</span> cell_type2, <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb54-9"><a href="#cb54-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span></span>
+<span id="cb54-10"><a href="#cb54-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">scale_color_manual</span>(<span class="at">values =</span> my_color) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb54-11"><a href="#cb54-11" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"monocle2 pseudotime"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"Timepoint"</span>) <span class="sc">+</span></span>
+<span id="cb54-12"><a href="#cb54-12" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by monocle2 pseudotime"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-28-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb56"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb56-1"><a href="#cb56-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggsave</span>(<span class="fu">paste0</span>(image_dir, <span class="st">"/pseudotime_monocle2.png"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Saving 7 x 5 in image
+Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+</div>
+</section>
+<section id="conclusion-1" class="level3">
+<h3 class="anchored" data-anchor-id="conclusion-1">Conclusion</h3>
+<p>Monocle 2 performs pretty well with ordering.</p>
+</section>
+</section>
+<section id="monocle-3" class="level2">
+<h2 class="anchored" data-anchor-id="monocle-3">Monocle 3</h2>
+<section id="description-3" class="level3">
+<h3 class="anchored" data-anchor-id="description-3">Description</h3>
+<p><code>Monocle3</code> (<a href="https://www.nature.com/articles/s41586-019-0969-x">Cao et al.&nbsp;2019</a>) is the latest version of Monocle, a single-cell analysis toolkit for analyzing large datasets. It is designed for use with absolute transcript counts (e.g.&nbsp;from UMI experiments). It first performs dimension reduction with UMAP, then clusters the cells with Louvain/Leiden algorithms and merges adjacent groups into supergroups, and final resolves individual cell trajectories within each supergroup.</p>
+<p>TL;DR: Monocle3 uses <code>UMAP</code> to construct a initial trajectory inference and refines it with learning principal graph.</p>
+<p>It builds a KNN graph in UMAP dimensions and runs Louvain/Leiden algorithms on the KNN graph to derive communities; edges are drawn to connect communities that have more links (via a Partitioned Approximate Graph Abstraction (PAGA) graph). Each component of the PAGA graph is passed to the next step: learning a “principal graph” based on the SimplePPT algorithm. Pseudotime is calculated for individual cells by projecting the cells to their nearest point on the principal graph edge and measure geodesic distance along of principal points to the closest of their root nodes.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb58"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb58-1"><a href="#cb58-1" aria-hidden="true" tabindex="-1"></a>monocle3_dengSCE_cell_metadata <span class="ot">&lt;-</span> <span class="fu">colData</span>(deng_SCE)[, <span class="sc">!</span><span class="fu">names</span>(<span class="fu">colData</span>(deng_SCE)) <span class="sc">%in%</span> </span>
+<span id="cb58-2"><a href="#cb58-2" aria-hidden="true" tabindex="-1"></a>          <span class="fu">c</span>(<span class="st">"slingshot"</span>)] <span class="co"># </span><span class="al">TODO</span><span class="co">/</span><span class="al">NOTE</span><span class="co">: this works, clean up! turns out, data.frame does not play well with custom datatypes, $slingshot is of custom type PseudotimeOrdering</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb59"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb59-1"><a href="#cb59-1" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(monocle3)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>
+Attaching package: 'monocle3'</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>The following objects are masked from 'package:monocle':
+
+    plot_genes_in_pseudotime, plot_genes_violin,
+    plot_pc_variance_explained</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>The following objects are masked from 'package:Biobase':
+
+    exprs, fData, fData&lt;-, pData, pData&lt;-</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb63"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb63-1"><a href="#cb63-1" aria-hidden="true" tabindex="-1"></a>gene_meta <span class="ot">&lt;-</span> <span class="fu">rowData</span>(deng_SCE)</span>
+<span id="cb63-2"><a href="#cb63-2" aria-hidden="true" tabindex="-1"></a><span class="co">#gene_metadata must contain a column verbatim named 'gene_short_name' for certain functions.</span></span>
+<span id="cb63-3"><a href="#cb63-3" aria-hidden="true" tabindex="-1"></a>gene_meta<span class="sc">$</span>gene_short_name  <span class="ot">&lt;-</span> <span class="fu">rownames</span>(gene_meta)</span>
+<span id="cb63-4"><a href="#cb63-4" aria-hidden="true" tabindex="-1"></a>cds <span class="ot">&lt;-</span> <span class="fu">new_cell_data_set</span>(<span class="at">expression_data =</span> <span class="fu">counts</span>(deng_SCE),</span>
+<span id="cb63-5"><a href="#cb63-5" aria-hidden="true" tabindex="-1"></a>                         <span class="at">cell_metadata =</span> monocle3_dengSCE_cell_metadata,</span>
+<span id="cb63-6"><a href="#cb63-6" aria-hidden="true" tabindex="-1"></a>                         <span class="at">gene_metadata =</span> gene_meta)</span>
+<span id="cb63-7"><a href="#cb63-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb63-8"><a href="#cb63-8" aria-hidden="true" tabindex="-1"></a><span class="do">## Step 1: Normalize and pre-process the data</span></span>
+<span id="cb63-9"><a href="#cb63-9" aria-hidden="true" tabindex="-1"></a>cds <span class="ot">&lt;-</span> <span class="fu">preprocess_cds</span>(cds,<span class="at">num_dim =</span> <span class="dv">5</span>)</span>
+<span id="cb63-10"><a href="#cb63-10" aria-hidden="true" tabindex="-1"></a><span class="fu">plot_pc_variance_explained</span>(cds)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-31-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb64"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb64-1"><a href="#cb64-1" aria-hidden="true" tabindex="-1"></a><span class="do">## Step 3: Reduce the dimensions using UMAP</span></span>
+<span id="cb64-2"><a href="#cb64-2" aria-hidden="true" tabindex="-1"></a>cds <span class="ot">&lt;-</span> <span class="fu">reduce_dimension</span>(cds)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>No preprocess_method specified, using preprocess_method = 'PCA'</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb66"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb66-1"><a href="#cb66-1" aria-hidden="true" tabindex="-1"></a><span class="do">## Step 4: Cluster the cells</span></span>
+<span id="cb66-2"><a href="#cb66-2" aria-hidden="true" tabindex="-1"></a>cds <span class="ot">&lt;-</span> <span class="fu">cluster_cells</span>(cds)</span>
+<span id="cb66-3"><a href="#cb66-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb66-4"><a href="#cb66-4" aria-hidden="true" tabindex="-1"></a><span class="do">## change the clusters</span></span>
+<span id="cb66-5"><a href="#cb66-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb66-6"><a href="#cb66-6" aria-hidden="true" tabindex="-1"></a>cds<span class="sc">@</span>clusters<span class="sc">$</span>UMAP<span class="sc">$</span>clusters <span class="ot">&lt;-</span> deng_SCE<span class="sc">$</span>cell_type2</span>
+<span id="cb66-7"><a href="#cb66-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb66-8"><a href="#cb66-8" aria-hidden="true" tabindex="-1"></a><span class="do">## Step 5: Learn a graph</span></span>
+<span id="cb66-9"><a href="#cb66-9" aria-hidden="true" tabindex="-1"></a>cds <span class="ot">&lt;-</span> <span class="fu">learn_graph</span>(cds, <span class="at">use_partition =</span> <span class="cn">FALSE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>
+  |                                                                            
+  |                                                                      |   0%
+  |                                                                            
+  |======================================================================| 100%</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb68"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb68-1"><a href="#cb68-1" aria-hidden="true" tabindex="-1"></a><span class="do">## Step 6: Order cells</span></span>
+<span id="cb68-2"><a href="#cb68-2" aria-hidden="true" tabindex="-1"></a>cds <span class="ot">&lt;-</span> <span class="fu">order_cells</span>(cds, <span class="at">root_cells =</span> <span class="fu">c</span>(<span class="st">"zy"</span>,<span class="st">"zy.1"</span>,<span class="st">"zy.2"</span>,<span class="st">"zy.3"</span>) )</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="plot-pseudotime-order-1" class="level3">
+<h3 class="anchored" data-anchor-id="plot-pseudotime-order-1">Plot pseudotime order</h3>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb69"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb69-1"><a href="#cb69-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plot_cells</span>(cds, <span class="at">color_cells_by=</span><span class="st">"cell_type2"</span>, <span class="at">graph_label_size =</span> <span class="dv">4</span>, <span class="at">cell_size =</span> <span class="dv">2</span>,</span>
+<span id="cb69-2"><a href="#cb69-2" aria-hidden="true" tabindex="-1"></a>           <span class="at">group_label_size =</span> <span class="dv">6</span>) <span class="sc">+</span> <span class="fu">scale_color_manual</span>(<span class="at">values =</span> my_color)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-34-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb70"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb70-1"><a href="#cb70-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plot_cells</span>(cds,  <span class="at">graph_label_size =</span> <span class="dv">6</span>, <span class="at">cell_size =</span> <span class="dv">1</span>, </span>
+<span id="cb70-2"><a href="#cb70-2" aria-hidden="true" tabindex="-1"></a>           <span class="at">color_cells_by=</span><span class="st">"pseudotime"</span>,</span>
+<span id="cb70-3"><a href="#cb70-3" aria-hidden="true" tabindex="-1"></a>           <span class="at">group_label_size =</span> <span class="dv">6</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Cells aren't colored in a way that allows them to be grouped.</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-35-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb72"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb72-1"><a href="#cb72-1" aria-hidden="true" tabindex="-1"></a>pdata_cds <span class="ot">&lt;-</span> <span class="fu">pData</span>(cds)</span>
+<span id="cb72-2"><a href="#cb72-2" aria-hidden="true" tabindex="-1"></a>pdata_cds<span class="sc">$</span>pseudotime_monocle3 <span class="ot">&lt;-</span> monocle3<span class="sc">::</span><span class="fu">pseudotime</span>(cds)</span>
+<span id="cb72-3"><a href="#cb72-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb72-4"><a href="#cb72-4" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(<span class="fu">as.data.frame</span>(pdata_cds), </span>
+<span id="cb72-5"><a href="#cb72-5" aria-hidden="true" tabindex="-1"></a>       <span class="fu">aes</span>(<span class="at">x =</span> pseudotime_monocle3, </span>
+<span id="cb72-6"><a href="#cb72-6" aria-hidden="true" tabindex="-1"></a>           <span class="at">y =</span> cell_type2, <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb72-7"><a href="#cb72-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span></span>
+<span id="cb72-8"><a href="#cb72-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">scale_color_manual</span>(<span class="at">values =</span> my_color) <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb72-9"><a href="#cb72-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"monocle3 pseudotime"</span>) <span class="sc">+</span> <span class="fu">ylab</span>(<span class="st">"Timepoint"</span>) <span class="sc">+</span></span>
+<span id="cb72-10"><a href="#cb72-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by monocle3 pseudotime"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-36-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb74"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb74-1"><a href="#cb74-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggsave</span>(<span class="fu">paste0</span>(image_dir, <span class="st">"/pseudotime_monocle3.png"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Saving 7 x 5 in image
+Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+</div>
+</section>
+<section id="conclusion-2" class="level3">
+<h3 class="anchored" data-anchor-id="conclusion-2">Conclusion</h3>
+<p>Monocle3 does not seem to work well on this dataset.</p>
+</section>
+</section>
+</section>
+<section id="diffusion-maps" class="level1">
+<h1>Diffusion Maps</h1>
+<section id="description-4" class="level2">
+<h2 class="anchored" data-anchor-id="description-4">Description</h2>
+<p><a href="https://en.wikipedia.org/wiki/Diffusion_map">Diffusion maps</a> (<a href="http://www.sciencedirect.com/science/article/pii/S1063520306000546">Coifman and Lafon 2006</a>) build on the underlying notion that the data are samples from a diffusion process. This method infers the low-dimensional manifold by estimating the eigenvalues and eigenvectors for the diffusion operator related to the data. More recently, <a href="https://www.nature.com/articles/nmeth.3971">Haghverdi et al.&nbsp;2016</a> explored the use of this non-linear dimension reduction method in applications to estimate pseudotime of single-cell transcriptomic data:</p>
+<p>As shown below, the method contains three steps:</p>
+<ol type="1">
+<li>computing the overlap of local kernels at the expression levels of cells <span class="math inline">x</span> and <span class="math inline">y</span>;</li>
+<li>Diffusion pseudotime <span class="math inline">dpt(x,y)</span> approximates the geodesic distance between <span class="math inline">x</span> and <span class="math inline">y</span> on the mapped manifold;</li>
+<li>Branching points are identified as points where anticorrelated distances from branch ends become correlated.</li>
+</ol>
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="images/diffusionmap_haghverdi.png" class="img-fluid figure-img"></p>
+<figcaption class="figure-caption">Diffusion map three-step process, adapted from Haghverdi et al.&nbsp;2016.</figcaption>
+</figure>
+</div>
+<p>To explore this method, we will use <a href="http://bioconductor.org/packages/destiny">destiny</a> (<a href="https://academic.oup.com/bioinformatics/article/32/8/1241/1744143">Angerer et al.&nbsp;2016</a>), an R package that applies diffusion maps to the analysis of single-cell RNA-seq data.</p>
+</section>
+<section id="cluster-and-order-cells-3" class="level2">
+<h2 class="anchored" data-anchor-id="cluster-and-order-cells-3">Cluster and order cells</h2>
+<p>First, we will take the rank order of cells in the first diffusion map component as “diffusion map pseudotime” here.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb76"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb76-1"><a href="#cb76-1" aria-hidden="true" tabindex="-1"></a><span class="co">#  Prepare a counts matrix with labeled rows and columns. </span></span>
+<span id="cb76-2"><a href="#cb76-2" aria-hidden="true" tabindex="-1"></a>deng <span class="ot">&lt;-</span> <span class="fu">logcounts</span>(deng_SCE) <span class="co"># access log-transformed counts matrix</span></span>
+<span id="cb76-3"><a href="#cb76-3" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(deng) <span class="ot">&lt;-</span> cellLabels</span>
+<span id="cb76-4"><a href="#cb76-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb76-5"><a href="#cb76-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Make a diffusion map.</span></span>
+<span id="cb76-6"><a href="#cb76-6" aria-hidden="true" tabindex="-1"></a>dm <span class="ot">&lt;-</span> <span class="fu">DiffusionMap</span>(<span class="fu">t</span>(deng))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning in DiffusionMap(t(deng)): You have 22431 genes. Consider passing e.g.
+n_pcs = 50 to speed up computation.</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>'as(&lt;dsCMatrix&gt;, "dgTMatrix")' is deprecated.
+Use 'as(as(., "generalMatrix"), "TsparseMatrix")' instead.
+See help("Deprecated") and help("Matrix-deprecated").</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb79"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb79-1"><a href="#cb79-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Optional: Try different sigma values when making diffusion map.</span></span>
+<span id="cb79-2"><a href="#cb79-2" aria-hidden="true" tabindex="-1"></a><span class="co"># dm &lt;- DiffusionMap(t(deng), sigma = "local")  # use local option to set sigma</span></span>
+<span id="cb79-3"><a href="#cb79-3" aria-hidden="true" tabindex="-1"></a><span class="co"># sigmas &lt;- find_sigmas(t(deng), verbose = FALSE)  # find optimal sigma</span></span>
+<span id="cb79-4"><a href="#cb79-4" aria-hidden="true" tabindex="-1"></a><span class="co"># dm &lt;- DiffusionMap(t(deng), sigma = optimal_sigma(sigmas))  </span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="plot-pseudotime-order-2" class="level2">
+<h2 class="anchored" data-anchor-id="plot-pseudotime-order-2">Plot pseudotime order</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb80"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb80-1"><a href="#cb80-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Plot diffusion component 1 vs diffusion component 2 (DC1 vs DC2). </span></span>
+<span id="cb80-2"><a href="#cb80-2" aria-hidden="true" tabindex="-1"></a>tmp <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(<span class="at">DC1 =</span> <span class="fu">eigenvectors</span>(dm)[,<span class="dv">1</span>],</span>
+<span id="cb80-3"><a href="#cb80-3" aria-hidden="true" tabindex="-1"></a>                  <span class="at">DC2 =</span> <span class="fu">eigenvectors</span>(dm)[,<span class="dv">2</span>],</span>
+<span id="cb80-4"><a href="#cb80-4" aria-hidden="true" tabindex="-1"></a>                  <span class="at">Timepoint =</span> cellLabels)</span>
+<span id="cb80-5"><a href="#cb80-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb80-6"><a href="#cb80-6" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(tmp, <span class="fu">aes</span>(<span class="at">x =</span> DC1, <span class="at">y =</span> DC2, <span class="at">colour =</span> Timepoint)) <span class="sc">+</span></span>
+<span id="cb80-7"><a href="#cb80-7" aria-hidden="true" tabindex="-1"></a>  <span class="fu">geom_point</span>() <span class="sc">+</span>  <span class="fu">scale_color_manual</span>(<span class="at">values =</span> my_color) <span class="sc">+</span></span>
+<span id="cb80-8"><a href="#cb80-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb80-9"><a href="#cb80-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">xlab</span>(<span class="st">"Diffusion component 1"</span>) <span class="sc">+</span> </span>
+<span id="cb80-10"><a href="#cb80-10" aria-hidden="true" tabindex="-1"></a>  <span class="fu">ylab</span>(<span class="st">"Diffusion component 2"</span>) <span class="sc">+</span></span>
+<span id="cb80-11"><a href="#cb80-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">ggtitle</span>(<span class="st">"Diffusion component biplot"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-39-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb81"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb81-1"><a href="#cb81-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Next, let us use the first diffusion component (DC1) as a measure of pseudotime.</span></span>
+<span id="cb81-2"><a href="#cb81-2" aria-hidden="true" tabindex="-1"></a><span class="co"># How does the separation by cell stage look?</span></span>
+<span id="cb81-3"><a href="#cb81-3" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>pseudotime_diffusionmap <span class="ot">&lt;-</span> <span class="fu">rank</span>(<span class="fu">eigenvectors</span>(dm)[,<span class="dv">1</span>])  <span class="co"># rank cells by their dpt</span></span>
+<span id="cb81-4"><a href="#cb81-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb81-5"><a href="#cb81-5" aria-hidden="true" tabindex="-1"></a>diffusion_df <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(<span class="fu">colData</span>(deng_SCE)[, <span class="sc">!</span><span class="fu">names</span>(<span class="fu">colData</span>(deng_SCE)) <span class="sc">%in%</span> </span>
+<span id="cb81-6"><a href="#cb81-6" aria-hidden="true" tabindex="-1"></a>          <span class="fu">c</span>(<span class="st">"slingshot"</span>)])</span>
+<span id="cb81-7"><a href="#cb81-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb81-8"><a href="#cb81-8" aria-hidden="true" tabindex="-1"></a><span class="fu">ggplot</span>(diffusion_df, </span>
+<span id="cb81-9"><a href="#cb81-9" aria-hidden="true" tabindex="-1"></a>       <span class="fu">aes</span>(<span class="at">x =</span> pseudotime_diffusionmap, </span>
+<span id="cb81-10"><a href="#cb81-10" aria-hidden="true" tabindex="-1"></a>           <span class="at">y =</span> cell_type2, <span class="at">colour =</span> cell_type2)) <span class="sc">+</span></span>
+<span id="cb81-11"><a href="#cb81-11" aria-hidden="true" tabindex="-1"></a>    <span class="fu">geom_quasirandom</span>(<span class="at">groupOnX =</span> <span class="cn">FALSE</span>) <span class="sc">+</span></span>
+<span id="cb81-12"><a href="#cb81-12" aria-hidden="true" tabindex="-1"></a>    <span class="fu">scale_color_manual</span>(<span class="at">values =</span> my_color)  <span class="sc">+</span> <span class="fu">theme_classic</span>() <span class="sc">+</span></span>
+<span id="cb81-13"><a href="#cb81-13" aria-hidden="true" tabindex="-1"></a>    <span class="fu">xlab</span>(<span class="st">"Diffusion component 1 (DC1)"</span>) <span class="sc">+</span></span>
+<span id="cb81-14"><a href="#cb81-14" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ylab</span>(<span class="st">"Timepoint"</span>) <span class="sc">+</span></span>
+<span id="cb81-15"><a href="#cb81-15" aria-hidden="true" tabindex="-1"></a>    <span class="fu">ggtitle</span>(<span class="st">"Cells ordered by diffusion map pseudotime"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-40-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb83"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb83-1"><a href="#cb83-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ggsave</span>(<span class="fu">paste0</span>(image_dir, <span class="st">"/pseudotime_DC1.png"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Saving 7 x 5 in image
+Orientation inferred to be along y-axis; override with
+`position_quasirandom(orientation = 'x')`</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb85"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb85-1"><a href="#cb85-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Plot eigenvalues of diffusion distance matrix.</span></span>
+<span id="cb85-2"><a href="#cb85-2" aria-hidden="true" tabindex="-1"></a><span class="fu">plot</span>(<span class="fu">eigenvalues</span>(dm), <span class="at">ylim =</span> <span class="dv">0</span><span class="sc">:</span><span class="dv">1</span>, <span class="at">pch =</span> <span class="dv">20</span>, <span class="at">xlab =</span> <span class="st">'Diffusion component (DC)'</span>, <span class="at">ylab =</span> <span class="st">'Eigenvalue'</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-42-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+<section id="conclusion-3" class="level2">
+<h2 class="anchored" data-anchor-id="conclusion-3">Conclusion</h2>
+<p>Like the other methods, using the first diffusion map component from <code>destiny</code> as pseudotime does a good job at ordering the early time-points (if we take high values as “earlier” in development), but it is unable to distinguish the later ones.</p>
+</section>
+</section>
+<section id="comparing-all-methods" class="level1">
+<h1>Comparing all methods</h1>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb86"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb86-1"><a href="#cb86-1" aria-hidden="true" tabindex="-1"></a>df_pseudotime <span class="ot">&lt;-</span> <span class="fu">colData</span>(deng_SCE)[, <span class="sc">!</span><span class="fu">names</span>(<span class="fu">colData</span>(deng_SCE)) <span class="sc">%in%</span> </span>
+<span id="cb86-2"><a href="#cb86-2" aria-hidden="true" tabindex="-1"></a>          <span class="fu">c</span>(<span class="st">"slingshot"</span>)]</span>
+<span id="cb86-3"><a href="#cb86-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb86-4"><a href="#cb86-4" aria-hidden="true" tabindex="-1"></a>df_pseudotime <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(</span>
+<span id="cb86-5"><a href="#cb86-5" aria-hidden="true" tabindex="-1"></a>    df_pseudotime[, <span class="fu">grep</span>(<span class="st">"pseudotime"</span>, <span class="fu">colnames</span>(df_pseudotime))]</span>
+<span id="cb86-6"><a href="#cb86-6" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb86-7"><a href="#cb86-7" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(df_pseudotime) <span class="ot">&lt;-</span> <span class="fu">gsub</span>(<span class="st">"pseudotime_"</span>, <span class="st">""</span>, </span>
+<span id="cb86-8"><a href="#cb86-8" aria-hidden="true" tabindex="-1"></a>                                <span class="fu">colnames</span>(df_pseudotime))</span>
+<span id="cb86-9"><a href="#cb86-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb86-10"><a href="#cb86-10" aria-hidden="true" tabindex="-1"></a><span class="co"># </span><span class="al">NOTE</span><span class="co">: TSCAN and diffusion are backwards</span></span>
+<span id="cb86-11"><a href="#cb86-11" aria-hidden="true" tabindex="-1"></a>df_pseudotime<span class="sc">$</span>PC1 <span class="ot">&lt;-</span> <span class="fu">reducedDim</span>(deng_SCE,<span class="st">"PCA"</span>)[,<span class="dv">1</span>]</span>
+<span id="cb86-12"><a href="#cb86-12" aria-hidden="true" tabindex="-1"></a>df_pseudotime<span class="sc">$</span>order_tscan <span class="ot">&lt;-</span> <span class="sc">-</span>df_pseudotime<span class="sc">$</span>order_tscan</span>
+<span id="cb86-13"><a href="#cb86-13" aria-hidden="true" tabindex="-1"></a>df_pseudotime<span class="sc">$</span>diffusionmap <span class="ot">&lt;-</span> <span class="sc">-</span>df_pseudotime<span class="sc">$</span>diffusionmap</span>
+<span id="cb86-14"><a href="#cb86-14" aria-hidden="true" tabindex="-1"></a>df_pseudotime<span class="sc">$</span>slingshot1 <span class="ot">&lt;-</span> <span class="fu">colData</span>(deng_SCE)<span class="sc">$</span>slingPseudotime_1</span>
+<span id="cb86-15"><a href="#cb86-15" aria-hidden="true" tabindex="-1"></a>df_pseudotime<span class="sc">$</span>monocle3 <span class="ot">&lt;-</span> pdata_cds<span class="sc">$</span>pseudotime_monocle3</span>
+<span id="cb86-16"><a href="#cb86-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb86-17"><a href="#cb86-17" aria-hidden="true" tabindex="-1"></a><span class="fu">corrplot.mixed</span>(<span class="fu">cor</span>(df_pseudotime, <span class="at">use =</span> <span class="st">"na.or.complete"</span>), </span>
+<span id="cb86-18"><a href="#cb86-18" aria-hidden="true" tabindex="-1"></a>               <span class="at">order =</span> <span class="st">"hclust"</span>, <span class="at">tl.col =</span> <span class="st">"black"</span>,</span>
+<span id="cb86-19"><a href="#cb86-19" aria-hidden="true" tabindex="-1"></a>               <span class="at">main =</span> <span class="st">"Correlation matrix for pseudotime results"</span>,</span>
+<span id="cb86-20"><a href="#cb86-20" aria-hidden="true" tabindex="-1"></a>               <span class="at">mar =</span> <span class="fu">c</span>(<span class="dv">0</span>, <span class="dv">0</span>, <span class="fl">3.1</span>, <span class="dv">0</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-43-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+<section id="conclusion-4" class="level2">
+<h2 class="anchored" data-anchor-id="conclusion-4">Conclusion</h2>
+<p>We see here that TSCAN generates a pseudotime trajectory that is similar to and strongly correlated with PC1. Diffusion Map pseudotime is less strongly correlated with these methods, and Slingshot pseudotime gives very different results.</p>
+</section>
+</section>
+<section id="gene-expression-over-time" class="level1">
+<h1>Gene expression over time</h1>
+<p>Each package also enables the visualization of expression through pseudotime. Following individual genes is very helpful for identifying genes that play an important role in the differentiation process.</p>
+<p>Let’s illustrate the procedure using the <code>Nanog</code> gene.</p>
+<p>We have added the pseudotime values computed with all methods here to the <code>colData</code> slot of a <code>SingleCellExperiment</code> object. Now, we can utilize the <code>scater</code> package to investigate relationships between gene expression, cell populations, and pseudotime. This is particularly useful for packages that do not provide bespoke plotting functions.</p>
+<section id="plot-pc1" class="level2">
+<h2 class="anchored" data-anchor-id="plot-pc1">Plot PC1</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb87"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb87-1"><a href="#cb87-1" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>PC1 <span class="ot">&lt;-</span> <span class="sc">-</span><span class="fu">reducedDim</span>(deng_SCE,<span class="st">"PCA"</span>)[,<span class="dv">1</span>]</span>
+<span id="cb87-2"><a href="#cb87-2" aria-hidden="true" tabindex="-1"></a><span class="fu">plotExpression</span>(deng_SCE, <span class="st">"Nanog"</span>, <span class="at">x =</span> <span class="st">"PC1"</span>, </span>
+<span id="cb87-3"><a href="#cb87-3" aria-hidden="true" tabindex="-1"></a>               <span class="at">colour_by =</span> <span class="st">"cell_type2"</span>, <span class="at">show_violin =</span> <span class="cn">FALSE</span>,</span>
+<span id="cb87-4"><a href="#cb87-4" aria-hidden="true" tabindex="-1"></a>               <span class="at">show_smooth =</span> <span class="cn">TRUE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`geom_smooth()` using method = 'loess' and formula = 'y ~ x'</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-44-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+<section id="plot-tscan" class="level2">
+<h2 class="anchored" data-anchor-id="plot-tscan">Plot TSCAN</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb89"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb89-1"><a href="#cb89-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plotExpression</span>(deng_SCE, <span class="st">"Nanog"</span>, <span class="at">x =</span> <span class="st">"pseudotime_order_tscan"</span>, </span>
+<span id="cb89-2"><a href="#cb89-2" aria-hidden="true" tabindex="-1"></a>               <span class="at">colour_by =</span> <span class="st">"cell_type2"</span>, <span class="at">show_violin =</span> <span class="cn">FALSE</span>,</span>
+<span id="cb89-3"><a href="#cb89-3" aria-hidden="true" tabindex="-1"></a>               <span class="at">show_smooth =</span> <span class="cn">TRUE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`geom_smooth()` using method = 'loess' and formula = 'y ~ x'</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 47 rows containing non-finite outside the scale range
+(`stat_smooth()`).</code></pre>
+</div>
+<div class="cell-output cell-output-stderr">
+<pre><code>Warning: Removed 47 rows containing missing values or values outside the scale range
+(`geom_point()`).</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-45-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+<section id="plot-monocle-2" class="level2">
+<h2 class="anchored" data-anchor-id="plot-monocle-2">Plot Monocle 2</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb93"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb93-1"><a href="#cb93-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plotExpression</span>(deng_SCE, <span class="st">"Nanog"</span>, <span class="at">x =</span> <span class="st">"pseudotime_monocle2"</span>, </span>
+<span id="cb93-2"><a href="#cb93-2" aria-hidden="true" tabindex="-1"></a>               <span class="at">colour_by =</span> <span class="st">"cell_type2"</span>, <span class="at">show_violin =</span> <span class="cn">FALSE</span>,</span>
+<span id="cb93-3"><a href="#cb93-3" aria-hidden="true" tabindex="-1"></a>               <span class="at">show_smooth =</span> <span class="cn">TRUE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`geom_smooth()` using method = 'loess' and formula = 'y ~ x'</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-46-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+<section id="plot-monocle-3" class="level2">
+<h2 class="anchored" data-anchor-id="plot-monocle-3">Plot Monocle 3</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb95"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb95-1"><a href="#cb95-1" aria-hidden="true" tabindex="-1"></a>deng_SCE<span class="sc">$</span>pseudotime_monocle3 <span class="ot">&lt;-</span> pdata_cds<span class="sc">$</span>pseudotime_monocle3</span>
+<span id="cb95-2"><a href="#cb95-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb95-3"><a href="#cb95-3" aria-hidden="true" tabindex="-1"></a><span class="fu">plotExpression</span>(deng_SCE, <span class="st">"Nanog"</span>, <span class="at">x =</span> <span class="st">"pseudotime_monocle3"</span>, </span>
+<span id="cb95-4"><a href="#cb95-4" aria-hidden="true" tabindex="-1"></a>               <span class="at">colour_by =</span> <span class="st">"cell_type2"</span>, <span class="at">show_violin =</span> <span class="cn">FALSE</span>,</span>
+<span id="cb95-5"><a href="#cb95-5" aria-hidden="true" tabindex="-1"></a>               <span class="at">show_smooth =</span> <span class="cn">TRUE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`geom_smooth()` using method = 'loess' and formula = 'y ~ x'</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-47-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+<section id="plot-diffusion-map" class="level2">
+<h2 class="anchored" data-anchor-id="plot-diffusion-map">Plot Diffusion Map</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb97"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb97-1"><a href="#cb97-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plotExpression</span>(deng_SCE, <span class="st">"Nanog"</span>, <span class="at">x =</span> <span class="st">"pseudotime_diffusionmap"</span>, </span>
+<span id="cb97-2"><a href="#cb97-2" aria-hidden="true" tabindex="-1"></a>               <span class="at">colour_by =</span> <span class="st">"cell_type2"</span>, <span class="at">show_violin =</span> <span class="cn">FALSE</span>,</span>
+<span id="cb97-3"><a href="#cb97-3" aria-hidden="true" tabindex="-1"></a>               <span class="at">show_smooth =</span> <span class="cn">TRUE</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stderr">
+<pre><code>`geom_smooth()` using method = 'loess' and formula = 'y ~ x'</code></pre>
+</div>
+<div class="cell-output-display">
+<p><img src="trajectory_inference_and_analysis_files/figure-html/unnamed-chunk-48-1.png" class="img-fluid" width="672"></p>
+</div>
+</div>
+</section>
+</section>
+<section id="references" class="level1">
+<h1>References</h1>
+<section id="prior-coursesworkshops" class="level2">
+<h2 class="anchored" data-anchor-id="prior-coursesworkshops">Prior Courses/Workshops</h2>
+<ul>
+<li><p><a href="https://biocellgen-public.svi.edu.au/mig_2019_scrnaseq-workshop/trajectory-inference.html#first-look-at-deng-data">University of Cambridge scRNA-seq Workshop 2019</a> (Section 11)</p></li>
+<li><p><a href="https://broadinstitute.github.io/2020_scWorkshop/trajectory-inference.html">Broad Institute scRNA-seq Workshop 2020</a> (Sections 13 and 14)</p></li>
+</ul>
+</section>
+<section id="papersarticles" class="level2">
+<h2 class="anchored" data-anchor-id="papersarticles">Papers/Articles</h2>
+<p>Angerer, Philipp, Laleh Haghverdi, Maren Büttner, Fabian J Theis, Carsten Marr, and Florian Buettner. 2016. “Destiny: Diffusion Maps for Large-Scale Single-Cell Data in R.” <em>Bioinformatics</em> 32 (8): 1241–3.</p>
+<p>Cao, Junyue, Malte Spielmann, Xiaojie Qiu, Xingfan Huang, Daniel M Ibrahim, Andrew J Hill, Fan Zhang, et al.&nbsp;2019. “The Single-Cell Transcriptional Landscape of Mammalian Organogenesis.” <em>Nature</em> 566 (7745): 496–502.</p>
+<p>Coifman, Ronald R, and Stéphane Lafon. 2006. “Diffusion Maps.” <em>Appl. Comput. Harmon. Anal.</em> 21 (1): 5–30.</p>
+<p>Deng, Q., D. Ramskold, B. Reinius, and R. Sandberg. 2014. “Single-Cell RNA-Seq Reveals Dynamic, Random Monoallelic Gene Expression in Mammalian Cells.” <em>Science</em> 343 (6167). American Association for the Advancement of Science (AAAS): 193–96. <a href="https://doi.org/10.1126/science.1245316" class="uri">https://doi.org/10.1126/science.1245316</a>.</p>
+<p>Hastie, Trevor, and Werner Stuetzle. 1989. “Principal Curves.” AT&amp;T Bell Laboratories, Murray Hill; Journal of the American Statistical Association.</p>
+<p>Ji, Zhicheng, and Hongkai Ji. 2019. <em>TSCAN: TSCAN: Tools for Single-Cell Analysis</em>.</p>
+<p>Qiu, Xiaojie, Qi Mao, Ying Tang, Li Wang, Raghav Chawla, Hannah A Pliner, and Cole Trapnell. 2017. “Reversed Graph Embedding Resolves Complex Single-Cell Trajectories.” <em>Nat. Methods</em> 14 (10): 979–82.</p>
+<p>Saelens, Wouter, Robrecht Cannoodt, Helena Todorov, and Yvan Saeys. 2019. “A Comparison of Single-Cell Trajectory Inference Methods.” <em>Nature Biotechnology</em> 37 (5). Nature Publishing Group: 547.</p>
+<p>Street, Kelly, Davide Risso, Russell B Fletcher, Diya Das, John Ngai, Nir Yosef, Elizabeth Purdom, and Sandrine Dudoit. 2018. “Slingshot: Cell Lineage and Pseudotime Inference for Single-Cell Transcriptomics.” <em>BMC Genomics</em> 19 (1): 477.</p>
+<p>Trapnell, Cole, Davide Cacchiarelli, Jonna Grimsby, Prapti Pokharel, Shuqiang Li, Michael Morse, Niall J Lennon, Kenneth J Livak, Tarjei S Mikkelsen, and John L Rinn. 2014. “The Dynamics and Regulators of Cell Fate Decisions Are Revealed by Pseudotemporal Ordering of Single Cells.” <em>Nat. Biotechnol.</em> 32 (4): 381–86.</p>
+</section>
+</section>
+<section id="code-internals" class="level1">
+<h1>Code Internals</h1>
+<section id="session-info" class="level2">
+<h2 class="anchored" data-anchor-id="session-info">Session Info</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb99"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb99-1"><a href="#cb99-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sessionInfo</span>()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>R version 4.4.1 (2024-06-14)
+Platform: aarch64-apple-darwin20
+Running under: macOS Sonoma 14.5
+
+Matrix products: default
+BLAS:   /Library/Frameworks/R.framework/Versions/4.4-arm64/Resources/lib/libRblas.0.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.4-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.12.0
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: America/New_York
+tzcode source: internal
+
+attached base packages:
+[1] splines   stats4    stats     graphics  grDevices utils     datasets 
+[8] methods   base     
+
+other attached packages:
+ [1] monocle3_1.3.7              gam_1.22-4                 
+ [3] foreach_1.5.2               Polychrome_1.5.1           
+ [5] corrplot_0.92               ggbeeswarm_0.7.2           
+ [7] ggthemes_5.1.0              slingshot_2.12.0           
+ [9] princurve_2.1.6             scater_1.32.1              
+[11] scuttle_1.14.0              destiny_3.18.0             
+[13] monocle_2.32.0              DDRTree_0.1.5              
+[15] irlba_2.3.5.1               VGAM_1.1-11                
+[17] ggplot2_3.5.1               Matrix_1.7-0               
+[19] M3Drop_1.30.0               numDeriv_2016.8-1.1        
+[21] TSCAN_1.42.0                TrajectoryUtils_1.12.0     
+[23] SingleCellExperiment_1.26.0 SummarizedExperiment_1.34.0
+[25] Biobase_2.64.0              GenomicRanges_1.56.1       
+[27] GenomeInfoDb_1.40.1         IRanges_2.38.1             
+[29] S4Vectors_0.42.1            BiocGenerics_0.50.0        
+[31] MatrixGenerics_1.16.0       matrixStats_1.3.0          
+[33] BiocManager_1.30.23        
+
+loaded via a namespace (and not attached):
+  [1] bitops_1.0-8              httr_1.4.7               
+  [3] RColorBrewer_1.1-3        tools_4.4.1              
+  [5] backports_1.5.0           utf8_1.2.4               
+  [7] R6_2.5.1                  uwot_0.2.2               
+  [9] mgcv_1.9-1                withr_3.0.1              
+ [11] sp_2.1-4                  gridExtra_2.3            
+ [13] cli_3.6.3                 textshaping_0.4.0        
+ [15] labeling_0.4.3            slam_0.1-52              
+ [17] mvtnorm_1.2-5             robustbase_0.99-3        
+ [19] proxy_0.4-27              QuickJSR_1.3.1           
+ [21] systemfonts_1.1.0         StanHeaders_2.32.10      
+ [23] foreign_0.8-87            parallelly_1.38.0        
+ [25] bbmle_1.0.25.1            limma_3.60.4             
+ [27] TTR_0.24.4                rstudioapi_0.16.0        
+ [29] generics_0.1.3            combinat_0.0-8           
+ [31] gtools_3.9.5              car_3.1-2                
+ [33] dplyr_1.1.4               inline_0.3.19            
+ [35] loo_2.8.0                 fansi_1.0.6              
+ [37] abind_1.4-5               lifecycle_1.0.4          
+ [39] scatterplot3d_0.3-44      yaml_2.3.10              
+ [41] carData_3.0-5             gplots_3.1.3.1           
+ [43] SparseArray_1.4.8         Rtsne_0.17               
+ [45] grid_4.4.1                promises_1.3.0           
+ [47] crayon_1.5.3              bdsmatrix_1.3-7          
+ [49] reldist_1.7-2             densEstBayes_1.0-2.2     
+ [51] lattice_0.22-6            cowplot_1.1.3            
+ [53] beachmat_2.20.0           pillar_1.9.0             
+ [55] knitr_1.48                boot_1.3-30              
+ [57] codetools_0.2-20          glue_1.7.0               
+ [59] leidenbase_0.1.30         V8_4.4.2                 
+ [61] pcaMethods_1.96.0         data.table_1.15.4        
+ [63] vcd_1.4-12                vctrs_0.6.5              
+ [65] gtable_0.3.5              assertthat_0.2.1         
+ [67] xfun_0.46                 S4Arrays_1.4.1           
+ [69] mime_0.12                 RcppEigen_0.3.4.0.0      
+ [71] HSMMSingleCell_1.24.0     pheatmap_1.0.12          
+ [73] iterators_1.0.14          fastICA_1.2-4            
+ [75] statmod_1.5.0             nlme_3.1-165             
+ [77] xts_0.14.0                RcppAnnoy_0.0.22         
+ [79] rstan_2.32.6              vipor_0.4.7              
+ [81] KernSmooth_2.23-24        rpart_4.1.23             
+ [83] colorspace_2.1-1          Hmisc_5.1-3              
+ [85] nnet_7.3-19               tidyselect_1.2.1         
+ [87] smoother_1.3              compiler_4.4.1           
+ [89] curl_5.2.1                htmlTable_2.4.3          
+ [91] BiocNeighbors_1.22.0      DelayedArray_0.30.1      
+ [93] checkmate_2.3.2           scales_1.3.0             
+ [95] caTools_1.18.2            DEoptimR_1.1-3           
+ [97] lmtest_0.9-40             hexbin_1.28.3            
+ [99] stringr_1.5.1             digest_0.6.36            
+[101] minqa_1.2.7               rmarkdown_2.27           
+[103] XVector_0.44.0            htmltools_0.5.8.1        
+[105] pkgconfig_2.0.3           base64enc_0.1-3          
+[107] lme4_1.1-35.5             sparseMatrixStats_1.16.0 
+[109] fastmap_1.2.0             rlang_1.1.4              
+[111] htmlwidgets_1.6.4         UCSC.utils_1.0.0         
+[113] shiny_1.9.1               DelayedMatrixStats_1.26.0
+[115] farver_2.1.2              zoo_1.8-12               
+[117] jsonlite_1.8.8            BiocParallel_1.38.0      
+[119] mclust_6.1.1              BiocSingular_1.20.0      
+[121] magrittr_2.0.3            Formula_1.2-5            
+[123] GenomeInfoDbData_1.2.12   munsell_0.5.1            
+[125] Rcpp_1.0.13               viridis_0.6.5            
+[127] stringi_1.8.4             zlibbioc_1.50.0          
+[129] MASS_7.3-61               plyr_1.8.9               
+[131] pkgbuild_1.4.4            parallel_4.4.1           
+[133] listenv_0.9.1             ggrepel_0.9.5            
+[135] igraph_2.0.3              ranger_0.16.0            
+[137] RcppHNSW_0.6.0            reshape2_1.4.4           
+[139] ScaledMatrix_1.12.0       rstantools_2.4.0         
+[141] evaluate_0.24.0           RcppParallel_5.1.8       
+[143] laeken_0.5.3              nloptr_2.1.1             
+[145] httpuv_1.6.15             VIM_6.2.2                
+[147] RANN_2.6.1                tidyr_1.3.1              
+[149] purrr_1.0.2               knn.covertree_1.0        
+[151] future_1.34.0             rsvd_1.0.5               
+[153] xtable_1.8-4              e1071_1.7-14             
+[155] RSpectra_0.16-2           later_1.3.2              
+[157] viridisLite_0.4.2         class_7.3-22             
+[159] ragg_1.3.2                tibble_3.2.1             
+[161] beeswarm_0.4.0            cluster_2.1.6            
+[163] ggplot.multistats_1.0.0   globals_0.16.3           </code></pre>
+</div>
+</div>
+</section>
+<section id="debugging" class="level2">
+<h2 class="anchored" data-anchor-id="debugging">Debugging</h2>
+<ul>
+<li>When running Monocle3, learning the partition graph can be a <a href="https://github.com/cole-trapnell-lab/monocle3/issues/130">bit finicky</a>. You may need to play around with settings like <code>use_partition</code> and the total number of partitions.</li>
+</ul>
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button', {
+    text: function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+  });
+  clipboard.on('success', function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  });
+  function tippyHover(el, contentFn) {
+    const config = {
+      allowHTML: true,
+      content: contentFn,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start'
+    };
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      return note.innerHTML;
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+</div> <!-- /content -->
+
+
+
+</body></html>

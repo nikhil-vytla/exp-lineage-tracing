@@ -1,0 +1,725 @@
+---
+title: "[Pseudotime] Trajectory inference and analysis of scRNA-seq data"
+format:
+  html:
+    toc: true
+    html-math-method: katex
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header: 
+      text: |
+       \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+author:
+  - name: Nikhil Vytla
+    email: nikhil_vytla@dfci.harvard.edu
+    affiliations:
+      - DFCI CCG
+---
+
+# Introduction
+
+This notebook encompasses a brief review of trajectory / path / lineage tracing utilizing **pseudotime** strategies with several modern R libraries, including `Monocle`, `Slingshot`, `TSCAN`, and `destiny`.
+
+What is **pseudotime**? *The distance between a cell and the start of the trajectory, measured along the shortest path. The trajectory's total length is defined in terms of the total amount of transcriptional change that a cell undergoes as it moves from the starting state to the end state* ([Trapnell](https://cole-trapnell-lab.github.io/monocle-release/docs/#constructing-single-cell-trajectories)).
+
+For the purpose of this playground, we will use a SMART-Seq2 single cell RNA-seq data from [Single-Cell RNA-Seq Reveals Dynamic, Random Monoallelic Gene Expression in Mammalian Cells (Deng et al. 2014)](http://science.sciencemag.org/content/343/6167/193). One relevant detail from their paper: "To investigate allele-specific gene expression at single-cell resolution, we isolated 269 individual cells dissociated from in vivo F1 embryos (CAST/EiJ × C57BL/6J, hereafter abbreviated as CAST and C57, respectively) from oocyte to blastocyst stages of mouse preimplantation development (PD)".
+
+Several of the methods referred to in this notebook have been sourced from original benchmarking work performed in [Saelens et al. 2019](https://pubmed.ncbi.nlm.nih.gov/30936559/).
+
+![Sample guidelines for trajectory inference methods, adapted from Saelens et al. 2019.](images/sampleguidelines_saelens.png)
+
+# Setup
+
+```{r message=FALSE, warning=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("SingleCellExperiment", "TSCAN", "M3Drop", "monocle", "destiny", "scater", "slingshot"))
+```
+
+```{r message=FALSE, warning=FALSE}
+# Bioconductor
+library(SingleCellExperiment)
+library(TSCAN)
+library(M3Drop)
+library(monocle)
+library(destiny)
+library(scater)
+library(slingshot)
+
+# Other
+library(ggplot2)
+library(ggthemes)
+library(ggbeeswarm)
+library(corrplot)
+library(Polychrome)
+
+set.seed(1)
+```
+
+# Exploratory Data Analysis
+
+## Load Data
+
+Optional: this data is originally downloaded from the Wellcome Sanger Institute.
+
+```
+#!/usr/bin/env bash
+
+# download course data
+aws --endpoint-url https://cog.sanger.ac.uk --no-sign-request s3 cp s3://singlecellcourse/data data --recursive
+```
+
+```{r}
+deng_SCE <- readRDS("../pseudotime_data/deng/deng-reads.rds")
+image_dir <- "../pseudotime_data/images/"
+```
+
+```{r}
+structure(deng_SCE)
+```
+
+## PCA
+
+Prior to using pseudotime methods, let's take a first look at our dataset by using PCA. We see that PCA performs relatively well up until distinguishing between the cell types `earlyblast`, `midblast`, and `lateblast`.
+
+```{r}
+# Re-order the levels of the factor storing the cell developmental stage.
+deng_SCE$cell_type2 <- factor(deng_SCE$cell_type2,
+                              levels = c("zy", "early2cell", "mid2cell", "late2cell",
+                                         "4cell", "8cell", "16cell", "earlyblast",
+                                         "midblast", "lateblast")
+                              )
+
+cellLabels <- deng_SCE$cell_type2
+deng <- counts(deng_SCE)
+colnames(deng) <- cellLabels
+
+# Run PCA
+deng_SCE <- runPCA(deng_SCE, ncomponent = 5)
+
+# Change color palette with library(Polychrome)
+
+set.seed(723451) # for reproducibility
+my_color <- createPalette(10, c("#010101", "#ff0000"), M=1000)
+names(my_color) <- unique(as.character(deng_SCE$cell_type2))
+
+# Use the reducedDim function to access the PCA and store the results.
+pca_df <- data.frame(PC1 = reducedDim(deng_SCE,"PCA")[,1],
+                     PC2 = reducedDim(deng_SCE,"PCA")[,2],
+                     cell_type2 = deng_SCE$cell_type2)
+
+ggplot(data = pca_df) + 
+  geom_point(mapping = aes(x = PC1, y = PC2, colour = cell_type2)) +
+  scale_colour_manual(values = my_color) + theme_classic() + 
+  xlab("PC1") + ylab("PC2") + ggtitle("PC biplot")
+```
+
+## Naive Pseudotime (ordering by first PC)
+
+```{r}
+# Add PCA data (first two PCs) to the deng_SCE object.
+# deng_SCE$PC1 <- reducedDim(deng_SCE, "PCA")[,1]
+# deng_SCE$PC2 <- reducedDim(deng_SCE, "PCA")[,2]
+
+ggplot(pca_df, aes(x = PC1, y = cell_type2, colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) +
+    scale_colour_manual(values = my_color) + theme_classic() +
+    xlab("PC1") + ylab("Timepoint") +
+    ggtitle("Cells ordered by first principal component")
+```
+
+```{r}
+ggsave(paste0(image_dir, "/pseudotime_PC1.png"))
+```
+
+As the plot above shows, PCA struggles to order cells early and late in the developmental timeline, but overall does a relatively good job of ordering other cells by developmental time.
+
+Now, let's explore bespoke pseudotime methods.
+
+# TSCAN
+
+## Description
+
+TSCAN ([Ji and Ji 2019](https://academic.oup.com/nar/article/44/13/e117/2457590)) combines clustering with pseudotime analysis. First it clusters the cells using `mclust`, which is based on a mixture of normal distributions. Then it builds a minimum spanning tree (MST) to connect the clusters. The branch of this MST that connects the largest number of clusters is designated the main branch, and is used to determine pseudotime.
+
+> **Note**: From a connected graph with weighted edges, the MST is the tree structure that connects all the nodes in a manner that minimizes the total edge weight. Trajectory inference methods that use MST are based on the notion that nodes (cells/clusters of cells) and their connections represent the geometric shape of the data cloud in a two-dimension space.
+
+## Cluster and order cells
+
+First, let's try to use all available genes to order cells.
+
+```{r}
+procdeng <- TSCAN::preprocess(counts(deng_SCE))
+
+colnames(procdeng) <- 1:ncol(deng_SCE)
+
+dengclust <- TSCAN::exprmclust(procdeng, clusternum = 10)
+
+TSCAN::plotmclust(dengclust)
+```
+
+```{r}
+# Note: This only contains 221 of 268 genes... what's going on?
+dengorderTSCAN <- TSCAN::TSCANorder(dengclust, orderonly = FALSE)
+
+pseudotime_order_tscan <- as.character(dengorderTSCAN$sample_name)
+deng_SCE$pseudotime_order_tscan <- NA
+deng_SCE$pseudotime_order_tscan[as.numeric(dengorderTSCAN$sample_name)] <- 
+    dengorderTSCAN$Pseudotime
+```
+
+> **⚠️** **Alert**: In this scenario, TSCAN only provided pseudotime values for 221 of 268 cells, silently returning missing values for non-assigned cells.
+
+Let's examine which timepoints have been assigned to each state:
+
+```{r}
+cellLabels[dengclust$clusterid == 10]
+```
+
+## Plot cell pseudotime order
+
+Now, let's plot TSCAN's pseudotime order:
+
+```{r}
+ggplot(as.data.frame(colData(deng_SCE)), 
+       aes(x = pseudotime_order_tscan, 
+           y = cell_type2, colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) +
+    scale_color_manual(values = my_color) + theme_classic() +
+    xlab("TSCAN pseudotime") + ylab("Timepoint") +
+    ggtitle("Cells ordered by TSCAN pseudotime")
+```
+
+```{r}
+ggsave(paste0(image_dir, "/pseudotime_TSCAN.png"))
+```
+
+## Conclusion
+
+In this scenario, TSCAN gets the development trajectory the "wrong way around", in the sense that later pseudotime values correspond to early timepoints and vice versa.
+
+This is not inherently a problem (it is easy enough to reverse the ordering to get the intuitive interpretation of pseudotime), **however**, on this dataset, it's tough to argue that TSCAN performs better than PCA (perhaps expected as TSCAN is based on PCA).
+
+# Slingshot
+
+## Description
+
+Slingshot ([Street et al. 2018](https://bmcgenomics.biomedcentral.com/articles/10.1186/s12864-018-4772-0)) is a single-cell lineage inference tool. It can work with datasets with multiple branches.
+
+Slingshot has two stages:
+
+1.  inference of the global lineage structure using MST on clustered data points and
+2.  inference of pseudotime variables for cells along each lineage by fitting "simultaneous principal curves" across multiple lineages.
+
+Slingshot's first stage uses a cluster-based MST to stably identify the key elements of the global lineage structure, i.e., the number of lineages and where they branch. This allows us to identify novel lineages while also accommodating the use of domain-specific knowledge to supervise parts of the tree (e.g., terminal cellular states).
+
+For the second stage, Slingshot proposes a novel method called "simultaneous principal curves", to fit smooth branching curves to these lineages, thereby translating the knowledge of global lineage structure into stable estimates of the underlying cell-level pseudotime variable for each lineage.
+
+In Saelens et al., Slingshot consistently performs well across different datasets.
+
+> **Note**: Principal curves are smooth one-dimensional curves that pass through the middle of a p-dimensional data set, providing a nonlinear summary of the data. They are nonparametric, and their shape is suggested by the data (Hastie et al)(Hastie and Stuetzle [1989](https://biocellgen-public.svi.edu.au/mig_2019_scrnaseq-workshop/trajectory-inference.html#ref-Hastie1989-pd)).
+
+## Cluster and order cells
+
+```{r}
+# Run Slingshot
+deng_SCE <- slingshot(deng_SCE, clusterLabels = 'cell_type2', reducedDim = "PCA",
+                      allow.breaks = FALSE)
+```
+
+```{r}
+summary(deng_SCE$slingPseudotime_1)
+```
+
+```{r}
+# Get lineages inferred by Slingshot
+lnes <- getLineages(reducedDim(deng_SCE,"PCA"),
+                    deng_SCE$cell_type2)
+```
+
+```{r}
+lnes@metadata$lineages
+```
+
+## Plot lineage and pseudotime order
+
+```{r}
+# Plot lineage overlay on the original PCA plot
+plot(reducedDims(deng_SCE)$PCA, col = my_color[as.character(deng_SCE$cell_type2)], 
+     pch=16, 
+     asp = 1)
+legend("bottomleft",legend = names(my_color[levels(deng_SCE$cell_type2)]),  
+       fill = my_color[levels(deng_SCE$cell_type2)])
+lines(SlingshotDataSet(deng_SCE), lwd=2, type = 'lineages', col = c("black"))
+```
+
+```{r}
+# NOTE/TODO: custom subset because as.data.frame does NOT work on full colData due to custom type PseudotimeOrdering of slingshot column!
+slingshot_df <- as.data.frame(
+  colData(deng_SCE)[, names(colData(deng_SCE)) %in% 
+          c("cell_type2", "slingPseudotime_1", "slingPseudotime_2", "slingPseudotime_3")])
+```
+
+```{r}
+# Plot pseudotime inferred by slingshot by cell types (lineage 1)
+
+ggplot(slingshot_df, aes(x = slingPseudotime_1, y = cell_type2, 
+                              colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) + theme_classic() +
+    xlab("1st Slingshot pseudotime") + ylab("cell type") +
+    ggtitle("Cells ordered by 1st Slingshot pseudotime")+scale_colour_manual(values = my_color)
+```
+
+```{r}
+ggsave(paste0(image_dir, "/pseudotime_slingshot1.png"))
+```
+
+```{r}
+ggplot(slingshot_df, aes(x = slingPseudotime_2, y = cell_type2, 
+                              colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) + theme_classic() +
+    xlab("2nd Slingshot pseudotime") + ylab("cell type") +
+    ggtitle("Cells ordered by 2nd Slingshot pseudotime")+scale_colour_manual(values = my_color)
+```
+
+```{r}
+ggplot(slingshot_df, aes(x = slingPseudotime_1, y = slingPseudotime_2, 
+                              colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) + theme_classic() +
+    xlab("1st Slingshot pseudotime") + ylab("2nd Slingshot pseudotime") +
+    ggtitle("Cells ordered by 1st and 2nd Slingshot pseudotimes")+scale_colour_manual(values = my_color)
+```
+
+> **Note**: You can also supply a start and an end cluster to `Slingshot`.
+>
+> ⚠️ **Comment**: Did you notice the ordering of clusters in the lineage predicted for the `16cells` state? There is an outlier-like cell in the `16cell` group, find the outlier and remove it, then re-run `Slingshot`.
+
+## Identify temporally expressed genes using GAMs (Generalized Additive Models)
+
+After running Slingshot, we may want to find genes that change their expression over the course of development.
+
+Let's explore one possible method of analysis on the 100 most variable genes in this dataset. We will first regress each gene on the pseudotime variable we have created using a general additive model (GAM). This will allow us to detect *non-linear* patterns in gene expression.
+
+```{r}
+library(gam)
+
+t <- deng_SCE$slingPseudotime_1
+
+# For demonstration purposes, only look at the 100 most variable genes 
+Y <- log1p(assay(deng_SCE,"logcounts"))
+
+var100 <- names(sort(apply(Y,1,var),decreasing = TRUE))[1:100]
+Y <- Y[var100,]
+
+# Fit a GAM with a loess term for pseudotime
+gam.pval <- apply(Y,1,function(z){
+    d <- data.frame(z=z, t=t)
+    suppressWarnings({
+      tmp <- gam(z ~ lo(t), data=d)
+    })
+    p <- summary(tmp)[3][[1]][2,3]
+    p
+})
+
+## Plot expression for top 100 genes 
+
+topgenes <- names(sort(gam.pval, decreasing = FALSE))[1:100]
+
+heatdata <- assays(deng_SCE)$logcounts[topgenes, order(t, na.last = NA)]
+heatclus <- deng_SCE$cell_type2[order(t, na.last = NA)]
+
+heatmap(heatdata, Colv = NA,
+        ColSideColors = my_color[heatclus],cexRow = 1,cexCol = 1)
+```
+
+# Monocle
+
+The original `Monocle` ([Trapnell et al. 2014](https://pubmed.ncbi.nlm.nih.gov/24658644/)) method skips the clustering stage of TSCAN and directly builds a MST on a reduced dimension representation (using "ICA") of the cells to connect all cells. `Monocle` then identifies the longest path in this tree as the main branch and uses this to determine pseudotime. Priors are required such as start/end state and the number of branching events.
+
+If the data contains diverging trajectories (i.e. one cell type differentiates into two different cell-types), monocle can identify these. Each of the resulting forked paths is defined as a separate cell state.
+
+## Monocle 2
+
+### Description
+
+Monocle 2 ([Qiu et al. 2017](https://pubmed.ncbi.nlm.nih.gov/28825705/)) uses a different approach, with dimensionality reduction and ordering performed by reverse graph embedding (RGE), allowing it to detect branching events in an unsupervised manner. RGE, a machine-learning strategy, learns a "principal graph" to describe the single-cell dataset. RGE also learns the mapping function of data points on the trajectory back to the original high dimensional space simultaneously. In doing so, it aims to position the latent points in the lower dimension space (along the trajectory) while also ensuring their corresponding positions in the input dimension are "neighbors".
+
+There are different ways of implementing the RGE framework, `Monocle 2` uses `DDRTree`(Discriminative dimensionality reduction via learning a tree) by default.
+
+`DDRTree` learns latent points and the projection of latent points to the points in original input space, which is equivalent to "dimension reduction". In addition, it simultaneously learns 'principal graph' for K-means soft clustered centroids for the latent points. Principal graph is the spanning tree of those centroids.
+
+DDRTree returns a principal tree of the centroids of cell clusters in low dimension, pseudotime is derived for individual cells by calculating geodesic distance of their projections onto the tree from the root (user-defined or arbitrarily assigned).
+
+> **Note**: Informally, a principal graph is like a principal curve which passes through the "middle" of a data set but is allowed to have branches.
+
+### Cluster and order cells
+
+```{r}
+library(monocle)
+
+# d <- deng_SCE[m3dGenes,]
+
+# Feature selection 
+
+deng <- counts(deng_SCE)
+
+m3dGenes <- as.character(
+    M3DropFeatureSelection(deng)$Gene
+)
+```
+
+```{r}
+d <- deng_SCE[which(rownames(deng_SCE) %in% m3dGenes), ]
+d <- d[!duplicated(rownames(d)), ]
+
+colnames(d) <- 1:ncol(d)
+geneNames <- rownames(d)
+rownames(d) <- 1:nrow(d)
+pd <- data.frame(timepoint = cellLabels)
+pd <- new("AnnotatedDataFrame", data=pd)
+fd <- data.frame(gene_short_name = geneNames)
+fd <- new("AnnotatedDataFrame", data=fd)
+
+dCellData <- newCellDataSet(counts(d), phenoData = pd, featureData = fd)
+
+dCellData <- setOrderingFilter(dCellData, which(geneNames %in% m3dGenes))
+dCellData <- estimateSizeFactors(dCellData)
+dCellDataSet <- reduceDimension(dCellData,reduction_method = "DDRTree", pseudo_expr = 1)
+dCellDataSet <- orderCells(dCellDataSet, reverse = FALSE)
+```
+
+### Plot pseudotime order
+
+```{r}
+plot_cell_trajectory(dCellDataSet)
+```
+
+```{r}
+# Store trajectory ordering
+pseudotime_monocle2 <-
+    data.frame(
+        Timepoint = phenoData(dCellDataSet)$timepoint,
+        pseudotime = phenoData(dCellDataSet)$Pseudotime,
+        State = phenoData(dCellDataSet)$State
+    )
+rownames(pseudotime_monocle2) <- 1:ncol(d)
+pseudotime_order_monocle <-
+    rownames(pseudotime_monocle2[order(pseudotime_monocle2$pseudotime), ])
+```
+
+Let's compare the inferred pseudotime to the known sampling timepoints.
+
+```{r}
+deng_SCE$pseudotime_monocle2 <- pseudotime_monocle2$pseudotime
+
+monocle2_df <- as.data.frame(
+  colData(deng_SCE)[, !names(colData(deng_SCE)) %in% c("slingshot")])
+
+ggplot(monocle2_df, 
+       aes(x = pseudotime_monocle2, 
+           y = cell_type2, colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) +
+    scale_color_manual(values = my_color) + theme_classic() +
+    xlab("monocle2 pseudotime") + ylab("Timepoint") +
+    ggtitle("Cells ordered by monocle2 pseudotime")
+```
+
+```{r}
+ggsave(paste0(image_dir, "/pseudotime_monocle2.png"))
+```
+
+### Conclusion
+
+Monocle 2 performs pretty well with ordering.
+
+## Monocle 3
+
+### Description
+
+`Monocle3` ([Cao et al. 2019](https://www.nature.com/articles/s41586-019-0969-x)) is the latest version of Monocle, a single-cell analysis toolkit for analyzing large datasets. It is designed for use with absolute transcript counts (e.g. from UMI experiments). It first performs dimension reduction with UMAP, then clusters the cells with Louvain/Leiden algorithms and merges adjacent groups into supergroups, and final resolves individual cell trajectories within each supergroup.
+
+TL;DR: Monocle3 uses `UMAP` to construct a initial trajectory inference and refines it with learning principal graph.
+
+It builds a KNN graph in UMAP dimensions and runs Louvain/Leiden algorithms on the KNN graph to derive communities; edges are drawn to connect communities that have more links (via a Partitioned Approximate Graph Abstraction (PAGA) graph). Each component of the PAGA graph is passed to the next step: learning a "principal graph" based on the SimplePPT algorithm. Pseudotime is calculated for individual cells by projecting the cells to their nearest point on the principal graph edge and measure geodesic distance along of principal points to the closest of their root nodes.
+
+```{r}
+monocle3_dengSCE_cell_metadata <- colData(deng_SCE)[, !names(colData(deng_SCE)) %in% 
+          c("slingshot")] # TODO/NOTE: this works, clean up! turns out, data.frame does not play well with custom datatypes, $slingshot is of custom type PseudotimeOrdering
+```
+
+```{r}
+library(monocle3)
+
+gene_meta <- rowData(deng_SCE)
+#gene_metadata must contain a column verbatim named 'gene_short_name' for certain functions.
+gene_meta$gene_short_name  <- rownames(gene_meta)
+cds <- new_cell_data_set(expression_data = counts(deng_SCE),
+                         cell_metadata = monocle3_dengSCE_cell_metadata,
+                         gene_metadata = gene_meta)
+
+## Step 1: Normalize and pre-process the data
+cds <- preprocess_cds(cds,num_dim = 5)
+plot_pc_variance_explained(cds)
+```
+
+```{r}
+## Step 3: Reduce the dimensions using UMAP
+cds <- reduce_dimension(cds)
+```
+
+```{r}
+## Step 4: Cluster the cells
+cds <- cluster_cells(cds)
+
+## change the clusters
+
+cds@clusters$UMAP$clusters <- deng_SCE$cell_type2
+
+## Step 5: Learn a graph
+cds <- learn_graph(cds, use_partition = FALSE)
+
+## Step 6: Order cells
+cds <- order_cells(cds, root_cells = c("zy","zy.1","zy.2","zy.3") )
+```
+
+### Plot pseudotime order
+
+```{r}
+plot_cells(cds, color_cells_by="cell_type2", graph_label_size = 4, cell_size = 2,
+           group_label_size = 6) + scale_color_manual(values = my_color)
+```
+
+```{r}
+plot_cells(cds,  graph_label_size = 6, cell_size = 1, 
+           color_cells_by="pseudotime",
+           group_label_size = 6)
+```
+
+```{r}
+pdata_cds <- pData(cds)
+pdata_cds$pseudotime_monocle3 <- monocle3::pseudotime(cds)
+
+ggplot(as.data.frame(pdata_cds), 
+       aes(x = pseudotime_monocle3, 
+           y = cell_type2, colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) +
+    scale_color_manual(values = my_color) + theme_classic() +
+    xlab("monocle3 pseudotime") + ylab("Timepoint") +
+    ggtitle("Cells ordered by monocle3 pseudotime")
+```
+
+```{r}
+ggsave(paste0(image_dir, "/pseudotime_monocle3.png"))
+```
+
+### Conclusion
+
+Monocle3 does not seem to work well on this dataset.
+
+# Diffusion Maps
+
+## Description
+
+[Diffusion maps](https://en.wikipedia.org/wiki/Diffusion_map) ([Coifman and Lafon 2006](http://www.sciencedirect.com/science/article/pii/S1063520306000546)) build on the underlying notion that the data are samples from a diffusion process. This method infers the low-dimensional manifold by estimating the eigenvalues and eigenvectors for the diffusion operator related to the data. More recently, [Haghverdi et al. 2016](https://www.nature.com/articles/nmeth.3971) explored the use of this non-linear dimension reduction method in applications to estimate pseudotime of single-cell transcriptomic data:
+
+As shown below, the method contains three steps:
+
+1.  computing the overlap of local kernels at the expression levels of cells $x$ and $y$;
+2.  Diffusion pseudotime $dpt(x,y)$ approximates the geodesic distance between $x$ and $y$ on the mapped manifold;
+3.  Branching points are identified as points where anticorrelated distances from branch ends become correlated.
+
+![Diffusion map three-step process, adapted from Haghverdi et al. 2016.](images/diffusionmap_haghverdi.png)
+
+To explore this method, we will use [destiny](http://bioconductor.org/packages/destiny) ([Angerer et al. 2016](https://academic.oup.com/bioinformatics/article/32/8/1241/1744143)), an R package that applies diffusion maps to the analysis of single-cell RNA-seq data.
+
+## Cluster and order cells
+
+First, we will take the rank order of cells in the first diffusion map component as "diffusion map pseudotime" here.
+
+```{r}
+#  Prepare a counts matrix with labeled rows and columns. 
+deng <- logcounts(deng_SCE) # access log-transformed counts matrix
+colnames(deng) <- cellLabels
+
+# Make a diffusion map.
+dm <- DiffusionMap(t(deng))
+
+# Optional: Try different sigma values when making diffusion map.
+# dm <- DiffusionMap(t(deng), sigma = "local")  # use local option to set sigma
+# sigmas <- find_sigmas(t(deng), verbose = FALSE)  # find optimal sigma
+# dm <- DiffusionMap(t(deng), sigma = optimal_sigma(sigmas))  
+```
+
+## Plot pseudotime order
+
+```{r}
+# Plot diffusion component 1 vs diffusion component 2 (DC1 vs DC2). 
+tmp <- data.frame(DC1 = eigenvectors(dm)[,1],
+                  DC2 = eigenvectors(dm)[,2],
+                  Timepoint = cellLabels)
+
+ggplot(tmp, aes(x = DC1, y = DC2, colour = Timepoint)) +
+  geom_point() +  scale_color_manual(values = my_color) +
+  theme_classic() +
+  xlab("Diffusion component 1") + 
+  ylab("Diffusion component 2") +
+  ggtitle("Diffusion component biplot")
+
+```
+
+```{r}
+# Next, let us use the first diffusion component (DC1) as a measure of pseudotime.
+# How does the separation by cell stage look?
+deng_SCE$pseudotime_diffusionmap <- rank(eigenvectors(dm)[,1])  # rank cells by their dpt
+
+diffusion_df <- as.data.frame(colData(deng_SCE)[, !names(colData(deng_SCE)) %in% 
+          c("slingshot")])
+
+ggplot(diffusion_df, 
+       aes(x = pseudotime_diffusionmap, 
+           y = cell_type2, colour = cell_type2)) +
+    geom_quasirandom(groupOnX = FALSE) +
+    scale_color_manual(values = my_color)  + theme_classic() +
+    xlab("Diffusion component 1 (DC1)") +
+    ylab("Timepoint") +
+    ggtitle("Cells ordered by diffusion map pseudotime")
+```
+
+```{r}
+ggsave(paste0(image_dir, "/pseudotime_DC1.png"))
+```
+
+```{r}
+# Plot eigenvalues of diffusion distance matrix.
+plot(eigenvalues(dm), ylim = 0:1, pch = 20, xlab = 'Diffusion component (DC)', ylab = 'Eigenvalue')
+```
+
+## Conclusion
+
+Like the other methods, using the first diffusion map component from `destiny` as pseudotime does a good job at ordering the early time-points (if we take high values as "earlier" in development), but it is unable to distinguish the later ones.
+
+# Comparing all methods
+
+```{r}
+df_pseudotime <- colData(deng_SCE)[, !names(colData(deng_SCE)) %in% 
+          c("slingshot")]
+
+df_pseudotime <- as.data.frame(
+    df_pseudotime[, grep("pseudotime", colnames(df_pseudotime))]
+)
+colnames(df_pseudotime) <- gsub("pseudotime_", "", 
+                                colnames(df_pseudotime))
+
+# NOTE: TSCAN and diffusion are backwards
+df_pseudotime$PC1 <- reducedDim(deng_SCE,"PCA")[,1]
+df_pseudotime$order_tscan <- -df_pseudotime$order_tscan
+df_pseudotime$diffusionmap <- -df_pseudotime$diffusionmap
+df_pseudotime$slingshot1 <- colData(deng_SCE)$slingPseudotime_1
+df_pseudotime$monocle3 <- pdata_cds$pseudotime_monocle3
+
+corrplot.mixed(cor(df_pseudotime, use = "na.or.complete"), 
+               order = "hclust", tl.col = "black",
+               main = "Correlation matrix for pseudotime results",
+               mar = c(0, 0, 3.1, 0))
+```
+
+## Conclusion
+
+We see here that TSCAN generates a pseudotime trajectory that is similar to and strongly correlated with PC1. Diffusion Map pseudotime is less strongly correlated with these methods, and Slingshot pseudotime gives very different results.
+
+# Gene expression over time
+
+Each package also enables the visualization of expression through pseudotime. Following individual genes is very helpful for identifying genes that play an important role in the differentiation process.
+
+Let's illustrate the procedure using the `Nanog` gene.
+
+We have added the pseudotime values computed with all methods here to the `colData` slot of a `SingleCellExperiment` object. Now, we can utilize the `scater` package to investigate relationships between gene expression, cell populations, and pseudotime. This is particularly useful for packages that do not provide bespoke plotting functions.
+
+## Plot PC1
+
+```{r}
+deng_SCE$PC1 <- -reducedDim(deng_SCE,"PCA")[,1]
+plotExpression(deng_SCE, "Nanog", x = "PC1", 
+               colour_by = "cell_type2", show_violin = FALSE,
+               show_smooth = TRUE)
+```
+
+## Plot TSCAN
+
+```{r}
+plotExpression(deng_SCE, "Nanog", x = "pseudotime_order_tscan", 
+               colour_by = "cell_type2", show_violin = FALSE,
+               show_smooth = TRUE)
+```
+
+## Plot Monocle 2
+
+```{r}
+plotExpression(deng_SCE, "Nanog", x = "pseudotime_monocle2", 
+               colour_by = "cell_type2", show_violin = FALSE,
+               show_smooth = TRUE)
+```
+
+## Plot Monocle 3
+
+```{r}
+deng_SCE$pseudotime_monocle3 <- pdata_cds$pseudotime_monocle3
+
+plotExpression(deng_SCE, "Nanog", x = "pseudotime_monocle3", 
+               colour_by = "cell_type2", show_violin = FALSE,
+               show_smooth = TRUE)
+```
+
+## Plot Diffusion Map
+
+```{r}
+plotExpression(deng_SCE, "Nanog", x = "pseudotime_diffusionmap", 
+               colour_by = "cell_type2", show_violin = FALSE,
+               show_smooth = TRUE)
+```
+
+# References
+
+## Prior Courses/Workshops
+
+-   [University of Cambridge scRNA-seq Workshop 2019](https://biocellgen-public.svi.edu.au/mig_2019_scrnaseq-workshop/trajectory-inference.html#first-look-at-deng-data) (Section 11)
+
+-   [Broad Institute scRNA-seq Workshop 2020](https://broadinstitute.github.io/2020_scWorkshop/trajectory-inference.html) (Sections 13 and 14)
+
+## Papers/Articles
+
+Angerer, Philipp, Laleh Haghverdi, Maren Büttner, Fabian J Theis, Carsten Marr, and Florian Buettner. 2016. "Destiny: Diffusion Maps for Large-Scale Single-Cell Data in R." *Bioinformatics* 32 (8): 1241--3.
+
+Cao, Junyue, Malte Spielmann, Xiaojie Qiu, Xingfan Huang, Daniel M Ibrahim, Andrew J Hill, Fan Zhang, et al. 2019. "The Single-Cell Transcriptional Landscape of Mammalian Organogenesis." *Nature* 566 (7745): 496--502.
+
+Coifman, Ronald R, and Stéphane Lafon. 2006. "Diffusion Maps." *Appl. Comput. Harmon. Anal.* 21 (1): 5--30.
+
+Deng, Q., D. Ramskold, B. Reinius, and R. Sandberg. 2014. "Single-Cell RNA-Seq Reveals Dynamic, Random Monoallelic Gene Expression in Mammalian Cells." *Science* 343 (6167). American Association for the Advancement of Science (AAAS): 193--96. <https://doi.org/10.1126/science.1245316>.
+
+Hastie, Trevor, and Werner Stuetzle. 1989. "Principal Curves." AT&T Bell Laboratories, Murray Hill; Journal of the American Statistical Association.
+
+Ji, Zhicheng, and Hongkai Ji. 2019. *TSCAN: TSCAN: Tools for Single-Cell Analysis*.
+
+Qiu, Xiaojie, Qi Mao, Ying Tang, Li Wang, Raghav Chawla, Hannah A Pliner, and Cole Trapnell. 2017. "Reversed Graph Embedding Resolves Complex Single-Cell Trajectories." *Nat. Methods* 14 (10): 979--82.
+
+Saelens, Wouter, Robrecht Cannoodt, Helena Todorov, and Yvan Saeys. 2019. "A Comparison of Single-Cell Trajectory Inference Methods." *Nature Biotechnology* 37 (5). Nature Publishing Group: 547.
+
+Street, Kelly, Davide Risso, Russell B Fletcher, Diya Das, John Ngai, Nir Yosef, Elizabeth Purdom, and Sandrine Dudoit. 2018. "Slingshot: Cell Lineage and Pseudotime Inference for Single-Cell Transcriptomics." *BMC Genomics* 19 (1): 477.
+
+Trapnell, Cole, Davide Cacchiarelli, Jonna Grimsby, Prapti Pokharel, Shuqiang Li, Michael Morse, Niall J Lennon, Kenneth J Livak, Tarjei S Mikkelsen, and John L Rinn. 2014. "The Dynamics and Regulators of Cell Fate Decisions Are Revealed by Pseudotemporal Ordering of Single Cells." *Nat. Biotechnol.* 32 (4): 381--86.
+
+# Code Internals
+
+## Session Info
+
+```{r}
+sessionInfo()
+```
+
+## Debugging
+
+-   When running Monocle3, learning the partition graph can be a [bit finicky](https://github.com/cole-trapnell-lab/monocle3/issues/130). You may need to play around with settings like `use_partition` and the total number of partitions.
